@@ -15,21 +15,36 @@ def _norm_text(value: str) -> str:
 
 
 def parse_address(address: str):
-    """Extract postal code and a usable street fragment from a French address."""
-    raw = (address or "").strip()
+    """Extract postal code, street number, street type/name and city."""
+    raw = re.sub(r"\s+", " ", (address or "").strip())
     postal = None
+    city = ""
+
     m = re.search(r"\b(\d{5})\b", raw)
     if m:
         postal = m.group(1)
-        street_part = (raw[:m.start()] + " " + raw[m.end():]).strip(" ,")
+        street_part = raw[:m.start()].strip(" ,")
+        city = raw[m.end():].strip(" ,")
     else:
         street_part = raw
-    # Remove common city separator if a city remains after the postal code.
-    if postal:
-        # Keep the part before postal code; if it was after, prefer the non-city part.
-        street_part = raw[:m.start()].strip(" ,")
-    return postal, _norm_text(street_part)
 
+    m_num = re.match(r"^(\d+[A-Za-z]?)\s+(.*)$", street_part)
+    number = m_num.group(1) if m_num else None
+    street = m_num.group(2) if m_num else street_part
+
+    street_types = {
+        "RUE", "AVENUE", "AVE", "BOULEVARD", "BD", "PLACE", "PL",
+        "CHEMIN", "CHE", "IMPASSE", "IMP", "QUAI", "PASSAGE",
+        "ALLEE", "ALLÉE", "COURS", "ROUTE", "RTE", "SQUARE",
+        "FAUBOURG", "FG", "VOIE"
+    }
+    tokens = street.split()
+    street_type = None
+    if tokens and tokens[0].upper().rstrip(".") in street_types:
+        street_type = tokens[0].upper().rstrip(".")
+        street = " ".join(tokens[1:])
+
+    return postal, number, street_type, _norm_text(street), _norm_text(city)
 
 def _street_query(street: str):
     """Build several conservative SIRENE query variants for street matching."""
@@ -42,48 +57,50 @@ def _street_query(street: str):
 def search_establishments(api_key: str, address: str, include_closed=True, max_results=100):
     """Search SIRENE establishments by French address.
 
-    Returns a tuple (dataframe, message). The API key is never logged or returned.
+    SIRENE may return HTTP 404 when a query has no matching element. This is
+    treated as an empty result and the next, looser query variant is tried.
     """
     if not api_key:
         raise ValueError("Clé SIRENE absente. Ajoutez SIRENE_API_KEY dans Streamlit Secrets.")
     if not address.strip():
         return [], "Saisissez une adresse."
 
-    postal, street = parse_address(address)
-    # If the user supplied a complete address, try to extract the street number.
-    number = None
-    m_num = re.match(r"^(\d+)\s+", street)
-    if m_num:
-        number = m_num.group(1)
-        street_name = street[m_num.end():].strip()
-    else:
-        street_name = street
+    postal, number, street_type, street_name, city = parse_address(address)
 
-    # First query: postal code + street name. If no postal code, street name only.
     clauses = []
     if postal:
         clauses.append(f"codePostalEtablissement:{postal}")
+    if city:
+        clauses.append(f'libelleCommuneEtablissement:"{city}"')
     if number:
         clauses.append(f"numeroVoieEtablissement:{number}")
+    if street_type:
+        clauses.append(f"typeVoieEtablissement:{street_type}")
     if street_name:
-        # Quoted phrase is intentionally conservative; fallback below loosens it.
         clauses.append(f'libelleVoieEtablissement:"{street_name}"')
 
     queries = []
     if clauses:
         queries.append(" AND ".join(clauses))
-    if street_name and postal:
-        # Fallback without the street number, useful when the address has an indice de répétition.
+    if postal and number and street_name:
+        queries.append(
+            f'codePostalEtablissement:{postal} AND numeroVoieEtablissement:{number} '
+            f'AND libelleVoieEtablissement:"{street_name}"'
+        )
+    if postal and street_name:
         queries.append(f'codePostalEtablissement:{postal} AND libelleVoieEtablissement:"{street_name}"')
+    if number and street_name:
+        queries.append(f'numeroVoieEtablissement:{number} AND libelleVoieEtablissement:"{street_name}"')
     if street_name:
         queries.append(f'libelleVoieEtablissement:"{street_name}"')
 
+    queries = list(dict.fromkeys(queries))
     headers = {
         "X-INSEE-Api-Key-Integration": api_key,
         "Accept": "application/json",
     }
 
-    last_error = None
+    last_nonempty_error = None
     for q in queries:
         params = {"q": q, "nombre": min(int(max_results), 1000)}
         try:
@@ -94,20 +111,21 @@ def search_establishments(api_key: str, address: str, include_closed=True, max_r
                 if establishments:
                     return establishments, q
                 continue
+            if r.status_code == 404:
+                continue
             if r.status_code == 401:
                 raise RuntimeError("Clé API SIRENE refusée (401). Vérifiez la clé dans Streamlit Secrets.")
             if r.status_code == 403:
                 raise RuntimeError("Accès API SIRENE refusé (403). Vérifiez la souscription Accès public.")
             if r.status_code == 429:
                 raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réessayez dans quelques secondes.")
-            last_error = f"HTTP {r.status_code}: {r.text[:250]}"
+            last_nonempty_error = f"HTTP {r.status_code}: {r.text[:250]}"
         except requests.RequestException as exc:
-            last_error = str(exc)
+            last_nonempty_error = str(exc)
 
-    if last_error:
-        raise RuntimeError(f"Erreur lors de l'appel à SIRENE : {last_error}")
-    return [], "Aucun établissement trouvé avec les critères d'adresse."
-
+    if last_nonempty_error:
+        raise RuntimeError(f"Erreur lors de l'appel à SIRENE : {last_nonempty_error}")
+    return [], queries[-1] if queries else ""
 
 def flatten_establishments(establishments):
     rows = []
