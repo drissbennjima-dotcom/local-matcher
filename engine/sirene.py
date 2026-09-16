@@ -147,7 +147,10 @@ def flatten_establishments(establishments):
         enseignes = [current_period.get("enseigne1Etablissement"), current_period.get("enseigne2Etablissement"), current_period.get("enseigne3Etablissement"), current_period.get("denominationUsuelleEtablissement")]
         enseigne = " / ".join([x for x in enseignes if x])
         status = "Fermé" if e.get("etatAdministratifEtablissement") == "F" else "Actif"
-        lat, lon = _lambert_to_wgs84(e.get("coordonneeLambertAbscisseEtablissement"), e.get("coordonneeLambertOrdonneeEtablissement"))
+        lat, lon = _lambert_to_wgs84(
+            addr.get("coordonneeLambertAbscisseEtablissement"),
+            addr.get("coordonneeLambertOrdonneeEtablissement")
+        )
         rows.append({
             "Statut": status, "SIRET": e.get("siret", ""), "SIREN": e.get("siren", ""),
             "Enseigne / nom usuel": enseigne, "Entreprise": ul.get("denominationUniteLegale") or "",
