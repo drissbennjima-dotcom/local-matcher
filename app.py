@@ -10,8 +10,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.3.1", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.3.1")
+st.set_page_config(page_title="Local Matcher V5.3.2", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.3.2")
 st.caption("Local cible → géolocalisation → zone commerciale → SIRENE → historique du local → matching")
 
 activities = pd.read_csv("data/activites.csv")
@@ -177,18 +177,18 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V5.3.1 distingue la recherche à l'adresse exacte, l'historique SIRENE et les liens de succession. Une recherche exacte ne doit pas mélanger les établissements d'une autre adresse.")
+st.caption("V5.3.2 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
     elif st.button("🔎 Rechercher l'historique du local"):
-        with st.spinner("Recherche des établissements actifs et fermés à l'adresse exacte…"):
+        with st.spinner("Recherche stricte des établissements actifs et fermés à l'adresse exacte…"):
             try:
                 raw, query_used = search_establishments(api_key, address, include_closed=True, max_results=100)
                 rows = flatten_establishments(raw)
                 st.session_state["sirene_rows"] = rows
                 st.session_state["sirene_query"] = query_used
-                st.session_state["sirene_scope"] = "Adresse exacte" if rows else "Aucun résultat exact"
+                st.session_state["sirene_scope"] = (f"Adresse exacte — {len(rows)} résultat(s) vérifié(s)" if rows else "Aucun résultat exact")
                 st.session_state.pop("local_timeline", None)
                 st.session_state.pop("local_succession", None)
                 if rows:

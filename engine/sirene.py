@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from math import isnan
 import requests
 
@@ -70,48 +71,93 @@ def _request(api_key, q, nombre=1000, curseur="*"):
     raise RuntimeError(f"Erreur SIRENE : HTTP {r.status_code}: {r.text[:250]}")
 
 
+def _normalize_address_text(value: str) -> str:
+    """Normalize address text for strict post-filtering of SIRENE results."""
+    value = (value or "").strip().upper()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r"[’']", "", value)
+    value = re.sub(r"[^A-Z0-9 ]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _matches_exact_address(establishment, postal, number, street_type, street_name, city):
+    """Return True only when the returned SIRENE address matches the requested address."""
+    addr = establishment.get("adresseEtablissement") or {}
+
+    wanted_number = _normalize_address_text(number)
+    wanted_street = _normalize_address_text(street_name)
+    wanted_type = _normalize_address_text(street_type)
+    wanted_postal = _normalize_address_text(postal)
+    wanted_city = _normalize_address_text(city)
+
+    returned_number = _normalize_address_text(addr.get("numeroVoieEtablissement"))
+    returned_street = _normalize_address_text(addr.get("libelleVoieEtablissement"))
+    returned_type = _normalize_address_text(addr.get("typeVoieEtablissement"))
+    returned_postal = _normalize_address_text(addr.get("codePostalEtablissement"))
+    returned_city = _normalize_address_text(addr.get("libelleCommuneEtablissement"))
+
+    if wanted_number and returned_number != wanted_number:
+        return False
+    if wanted_street and returned_street != wanted_street:
+        return False
+    if wanted_type and returned_type != wanted_type:
+        return False
+    if wanted_postal and returned_postal != wanted_postal:
+        return False
+    if wanted_city and returned_city != wanted_city:
+        return False
+    return True
+
+
 def search_establishments(api_key: str, address: str, include_closed=True, max_results=100):
-    """Exact-address search, with active and closed states queried separately."""
+    """Strict exact-address search, with active and closed states queried separately.
+
+    The API query contains the street number whenever one was supplied. Results are
+    also post-filtered against the returned SIRENE address so an API response can
+    never silently mix another street number into an exact-address result.
+    """
     if not api_key:
         raise ValueError("Clé SIRENE absente. Ajoutez SIRENE_API_KEY dans Streamlit Secrets.")
+
     postal, number, street_type, street_name, city = parse_address(address)
     base = []
-    if postal: base.append(f"codePostalEtablissement:{postal}")
-    if city: base.append(f'libelleCommuneEtablissement:"{city}"')
-    if number: base.append(f"numeroVoieEtablissement:{number}")
-    if street_type: base.append(f"typeVoieEtablissement:{street_type}")
-    if street_name: base.append(f'libelleVoieEtablissement:"{street_name}"')
+    if postal:
+        base.append(f"codePostalEtablissement:{postal}")
+    if city:
+        base.append(f'libelleCommuneEtablissement:"{city}"')
+    if number:
+        base.append(f"numeroVoieEtablissement:{number}")
+    if street_type:
+        base.append(f"typeVoieEtablissement:{street_type}")
+    if street_name:
+        base.append(f'libelleVoieEtablissement:"{street_name}"')
+
     if not base:
         return [], "Adresse insuffisante pour une recherche SIRENE."
 
-    # When a street number is supplied, keep the first search strictly tied to
-    # that number. We do not silently broaden an exact-address history search
-    # to the whole street, because that can mix different premises.
-    variants = [base]
-    if postal and number and street_name:
-        variants.append([
-            f"codePostalEtablissement:{postal}",
-            f"numeroVoieEtablissement:{number}",
-            f'libelleVoieEtablissement:"{street_name}"'
-        ])
-
     all_results = {}
     used = []
-    for status in (["A", "F"] if include_closed else ["A"]):
-        found = []
-        used_q = None
-        for clauses in variants:
-            q = " AND ".join(clauses + [f"periode(etatAdministratifEtablissement:{status})"])
-            payload = _request(api_key, q, max_results)
-            found = payload.get("etablissements", [])
-            if found:
-                used_q = q
-                break
-        used.append(f"{status}: {used_q or 'aucun résultat'}")
+    statuses = ["A", "F"] if include_closed else ["A"]
+
+    for status in statuses:
+        q = " AND ".join(base + [f"periode(etatAdministratifEtablissement:{status})"])
+        payload = _request(api_key, q, max_results)
+        raw_found = payload.get("etablissements", [])
+        found = [
+            e for e in raw_found
+            if _matches_exact_address(e, postal, number, street_type, street_name, city)
+        ]
+        used.append(f"{status}: {q}")
         for e in found:
             if e.get("siret"):
                 all_results[e["siret"]] = e
-    return list(all_results.values()), " | ".join(used)
+
+    if number:
+        scope_note = f"Adresse exacte n°{number}"
+    else:
+        scope_note = "Adresse exacte (sans numéro de voie)"
+    return list(all_results.values()), f"{scope_note} | " + " | ".join(used)
 
 
 def search_commune_active(api_key: str, citycode: str, max_pages=20):
