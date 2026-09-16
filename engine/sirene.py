@@ -279,64 +279,92 @@ def history_periods_for_record(record):
     return out
 
 
-def build_local_history(api_key: str, rows, target_address: str, max_seeds=10):
-    """Build a cautious local history from closed address matches and succession links.
+def build_local_history(api_key: str, rows, target_address: str, max_seeds=20):
+    """Build a cautious local history directly from historized SIRENE periods.
 
-    The API is queried only for a limited number of seed establishments to respect
-    the public 30 requests/minute quota. Succession links are reported as links,
-    not as proof that two operators were the same business.
+    The address search already returns ``periodesEtablissement`` for each SIRET.
+    V5.2 uses those periods first instead of re-querying the same establishments,
+    which makes the chronology more reliable and avoids unnecessary API calls.
+    Detailed SIRET lookups are only used as a fallback when periods are missing.
+    Succession links are queried for a limited number of establishments.
     """
     target_sig = address_signature(target_address)
-    closed = [r for r in rows if r.get("Statut") == "Fermé"]
-    active = [r for r in rows if r.get("Statut") == "Actif"]
-    seeds = (closed + active)[:max_seeds]
+    seeds = [r for r in rows if r.get("SIRET")][:max_seeds]
+    timeline = []
+    succession_rows = []
+    seen_sirets = set()
+    calls = 0
+
+    # 1) Use historized periods already present in the address-search response.
+    for row in seeds:
+        siret = row.get("SIRET", "")
+        periods = row.get("Historique périodes") or []
+        if periods:
+            seen_sirets.add(siret)
+            for p in periods:
+                name = (p.get("enseigne1Etablissement") or
+                        p.get("enseigne2Etablissement") or
+                        p.get("enseigne3Etablissement") or
+                        p.get("denominationUsuelleEtablissement") or "")
+                timeline.append({
+                    "SIRET": siret,
+                    "Début": p.get("dateDebut", ""),
+                    "Fin": p.get("dateFin", "") or "En cours",
+                    "Statut": "Fermé" if p.get("etatAdministratifEtablissement") == "F" else "Actif",
+                    "Enseigne / nom usuel": name,
+                    "Entreprise": row.get("Entreprise", ""),
+                    "APE": p.get("activitePrincipaleEtablissement") or row.get("APE", ""),
+                })
+
+    # 2) Fallback: fetch detailed history only for records without periods.
     cache = {}
     links_cache = {}
 
     def fetch(siret):
+        nonlocal calls
         if siret not in cache:
             cache[siret] = get_establishment_history(api_key, siret)
+            calls += 1
         return cache[siret]
 
-    def links(siret):
-        if siret not in links_cache:
-            links_cache[siret] = search_succession_links(api_key, siret)
-        return links_cache[siret]
-
-    timeline = []
-    succession_rows = []
-    seen = set()
-    for seed in seeds:
-        siret = seed.get("SIRET")
-        if not siret or siret in seen:
+    for row in seeds:
+        siret = row.get("SIRET", "")
+        if not siret or (row.get("Historique périodes") or []):
             continue
         record = fetch(siret)
-        if not record:
-            continue
-        e = record.get("etablissement") or record
-        if _address_signature_from_raw(e) == target_sig:
-            seen.add(siret)
+        if record:
             timeline.extend(history_periods_for_record(record))
-        for link in links(siret):
+            seen_sirets.add(siret)
+
+    # 3) Succession links for a limited set of seed establishments.
+    for siret in list(seen_sirets)[:max_seeds]:
+        if siret not in links_cache:
+            links_cache[siret] = search_succession_links(api_key, siret)
+        for link in links_cache[siret]:
             pred = link.get("siretEtablissementPredecesseur", "")
             succ = link.get("siretEtablissementSuccesseur", "")
-            other = succ if pred == siret else pred
-            if not other or other == siret:
+            if not pred or not succ or pred == succ:
                 continue
-            other_record = fetch(other)
-            other_e = (other_record or {}).get("etablissement") or (other_record or {})
-            if other_record and _address_signature_from_raw(other_e) == target_sig:
-                seen.add(other)
-                timeline.extend(history_periods_for_record(other_record))
-                succession_rows.append({
-                    "Prédécesseur": pred,
-                    "Successeur": succ,
-                    "Date du lien": link.get("dateLienSuccession", ""),
-                    "Continuité économique": "Oui" if link.get("continuiteEconomique") else "Non",
-                    "Transfert de siège": "Oui" if link.get("transfertSiege") else "Non",
-                })
+            succession_rows.append({
+                "Prédécesseur": pred,
+                "Successeur": succ,
+                "Date du lien": link.get("dateLienSuccession", ""),
+                "Continuité économique": "Oui" if link.get("continuiteEconomique") else "Non",
+                "Transfert de siège": "Oui" if link.get("transfertSiege") else "Non",
+            })
 
-    # Deduplicate periods and sort newest first.
-    dedup = {(r["SIRET"], r["Début"], r["Fin"], r["APE"], r["Enseigne / nom usuel"]): r for r in timeline}
-    timeline = sorted(dedup.values(), key=lambda x: x.get("Début", ""), reverse=True)
-    return timeline, succession_rows, len(cache)
+    # Deduplicate periods and succession links.
+    dedup = {
+        (r["SIRET"], r["Début"], r["Fin"], r["APE"], r["Enseigne / nom usuel"], r["Statut"]): r
+        for r in timeline
+    }
+    timeline = list(dedup.values())
+    timeline.sort(key=lambda x: (x.get("Début", ""), x.get("SIRET", "")), reverse=True)
+
+    succ_dedup = {
+        (r["Prédécesseur"], r["Successeur"], r["Date du lien"]): r
+        for r in succession_rows
+    }
+    succession_rows = list(succ_dedup.values())
+    return timeline, succession_rows, calls
+

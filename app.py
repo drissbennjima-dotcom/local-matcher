@@ -10,8 +10,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5")
+st.set_page_config(page_title="Local Matcher V5.2", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.2")
 st.caption("Local cible → géolocalisation → zone commerciale → SIRENE → historique du local → matching")
 
 activities = pd.read_csv("data/activites.csv")
@@ -221,9 +221,9 @@ if rows:
     if timeline:
         st.markdown("### 🧭 Chronologie détectée du local")
         st.dataframe(pd.DataFrame(timeline), use_container_width=True, hide_index=True)
-        st.caption(f"Historique reconstitué à partir de {st.session_state.get('local_history_calls', 0)} interrogations SIRENE détaillées. Les périodes SIRENE décrivent l'établissement ; elles ne constituent pas à elles seules une preuve juridique d'occupation physique du local.")
+        st.caption(f"Chronologie construite à partir des périodes historisées SIRENE déjà retournées à l'adresse. {st.session_state.get('local_history_calls', 0)} interrogation(s) SIRENE détaillée(s) supplémentaire(s). Les périodes SIRENE décrivent l'établissement ; elles ne constituent pas à elles seules une preuve juridique d'occupation physique du local.")
     else:
-        st.warning("Aucune chronologie historisée supplémentaire n'a pu être reconstituée à partir des établissements trouvés.")
+        st.warning("Aucune période historisée exploitable n'a été retournée pour les établissements sélectionnés. Cela ne signifie pas qu'il n'existe aucun historique à cette adresse.")
 
     if succession_rows:
         st.markdown("### 🔄 Liens de succession détectés")
@@ -283,7 +283,7 @@ if st.session_state.get("chosen_sirene"):
     export["ancien_siren_sirene"] = c.get("SIREN", "")
     export["ancien_occupant_sirene"] = c.get("Enseigne / nom usuel", "") or c.get("Entreprise", "")
     export["ancien_ape_sirene"] = c.get("APE", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_2.csv", "text/csv")
 
 st.divider()
 st.markdown("### Architecture V5\n`Adresse → géocodage → commune → SIRENE géolocalisé → rayon → environnement commercial → historique local → succession → matching`\n\n### Architecture cible\n`Local → zone → historique → parcelle → propriétaire → prospects → enseignes`")
