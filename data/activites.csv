@@ -1,0 +1,28 @@
+activity_name,code_ape,category,surface_min,surface_max,cold_need,extraction_need,delivery_need,power_need,reserve_need
+Commerce alimentaire général,47.11B,Alimentaire,150,1000,Très élevé,Moyen,Élevé,Élevé,Très élevé
+Supermarché,47.11D,Alimentaire,500,3000,Très élevé,Moyen,Très élevé,Très élevé,Très élevé
+Supérette,47.11B,Alimentaire,100,500,Très élevé,Moyen,Élevé,Élevé,Élevé
+Commerce alimentaire spécialisé,47.29Z,Alimentaire,80,500,Élevé,Moyen,Moyen,Élevé,Élevé
+Primeur,47.21Z,Alimentaire,60,300,Élevé,Moyen,Moyen,Moyen,Moyen
+Boulangerie-pâtisserie,10.71C,Alimentaire,80,400,Moyen,Très élevé,Moyen,Élevé,Élevé
+Boucherie-charcuterie,47.22Z,Alimentaire,60,300,Élevé,Moyen,Moyen,Élevé,Moyen
+Restauration traditionnelle,56.10A,Restauration,80,500,Moyen,Très élevé,Élevé,Élevé,Moyen
+Restauration rapide,56.10C,Restauration,50,400,Moyen,Très élevé,Élevé,Élevé,Moyen
+Café / coffee shop,56.30Z,Restauration,50,250,Faible,Moyen,Moyen,Moyen,Faible
+Commerce de vêtements,47.71Z,Mode,100,1500,Faible,Faible,Moyen,Moyen,Élevé
+Chaussures,47.72A,Mode,80,800,Faible,Faible,Moyen,Moyen,Moyen
+Optique,47.78A,Services,50,300,Faible,Faible,Faible,Moyen,Faible
+Pharmacie,47.73Z,Santé,80,400,Faible,Faible,Moyen,Élevé,Moyen
+Parfumerie / cosmétique,47.75Z,Beauté,50,300,Faible,Faible,Faible,Moyen,Faible
+Coiffure,96.02A,Beauté,50,300,Faible,Faible,Faible,Moyen,Faible
+Institut de beauté,96.02B,Beauté,40,250,Faible,Faible,Faible,Moyen,Faible
+Salle de sport / fitness,93.13Z,Sport,500,3000,Faible,Moyen,Moyen,Très élevé,Très élevé
+Retail discount,47.19B,Retail,500,2500,Faible,Faible,Très élevé,Élevé,Très élevé
+Ameublement,47.59A,Retail,300,3000,Faible,Faible,Très élevé,Élevé,Très élevé
+Décoration maison,47.59B,Retail,100,1000,Faible,Faible,Élevé,Moyen,Élevé
+Bricolage,47.52A,Retail,500,5000,Faible,Faible,Très élevé,Très élevé,Très élevé
+Agence immobilière,68.31Z,Services,40,300,Faible,Faible,Faible,Faible,Faible
+Banque / agence bancaire,64.19Z,Services,100,800,Faible,Faible,Faible,Moyen,Moyen
+Assurance,65.12Z,Services,50,500,Faible,Faible,Faible,Faible,Faible
+Cabinet médical,86.22Z,Santé,80,500,Faible,Faible,Moyen,Moyen,Moyen
+Centre de formation,85.59A,Services,100,1000,Faible,Faible,Faible,Moyen,Moyen
