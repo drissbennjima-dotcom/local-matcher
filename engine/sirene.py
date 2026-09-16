@@ -126,12 +126,24 @@ def search_commune_active(api_key: str, citycode: str, max_pages=20):
 
 
 def _lambert_to_wgs84(x, y):
+    """Return WGS84 coordinates while handling Sirene's coordinate formats.
+
+    Sirene 3.11 may expose WGS84 values for most establishments and Lambert-93
+    values for some records. We detect the numeric range instead of assuming
+    every record is Lambert-93.
+    """
     if x in (None, "") or y in (None, ""):
         return None, None
     try:
+        xf, yf = float(x), float(y)
+        # WGS84 longitude/latitude range.
+        if abs(xf) <= 180 and abs(yf) <= 90:
+            return float(yf), float(xf)
         from pyproj import Transformer
         transformer = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
-        lon, lat = transformer.transform(float(x), float(y))
+        lon, lat = transformer.transform(xf, yf)
+        if abs(lon) > 180 or abs(lat) > 90:
+            return None, None
         return float(lat), float(lon)
     except Exception:
         return None, None
@@ -169,3 +181,157 @@ def summarize_history(periods):
         name = p.get("enseigne1Etablissement") or p.get("denominationUsuelleEtablissement") or ""
         out.append({"Début": p.get("dateDebut", ""), "Fin": p.get("dateFin", "") or "En cours", "Statut": "Fermé" if p.get("etatAdministratifEtablissement") == "F" else "Actif", "Enseigne / nom usuel": name, "APE": p.get("activitePrincipaleEtablissement") or ""})
     return out
+
+
+
+def _request_siret(api_key: str, siret: str):
+    if not api_key:
+        raise ValueError("Clé SIRENE absente.")
+    try:
+        r = requests.get(f"{BASE_URL}/siret/{siret}", headers=_headers(api_key), timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Erreur réseau SIRENE : {exc}") from exc
+    if r.status_code == 200:
+        return r.json()
+    if r.status_code == 404:
+        return None
+    if r.status_code == 401:
+        raise RuntimeError("Clé SIRENE refusée (401). Vérifiez Streamlit Secrets.")
+    if r.status_code == 403:
+        raise RuntimeError("Accès API SIRENE refusé (403). Vérifiez la souscription Accès public.")
+    if r.status_code == 429:
+        raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réduisez la recherche historique ou réessayez dans quelques secondes.")
+    raise RuntimeError(f"Erreur SIRENE : HTTP {r.status_code}: {r.text[:250]}")
+
+
+def get_establishment_history(api_key: str, siret: str):
+    """Get the complete historized record for one SIRET."""
+    return _request_siret(api_key, siret)
+
+
+def search_succession_links(api_key: str, siret: str):
+    """Return establishment succession links for a SIRET."""
+    try:
+        r = requests.get(
+            f"{BASE_URL}/siret/liensSuccession",
+            params={"q": f"siretEtablissementPredecesseur:{siret} OR siretEtablissementSuccesseur:{siret}"},
+            headers=_headers(api_key), timeout=TIMEOUT,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Erreur réseau SIRENE : {exc}") from exc
+    if r.status_code == 200:
+        return r.json().get("liensSuccession", [])
+    if r.status_code == 404:
+        return []
+    if r.status_code == 401:
+        raise RuntimeError("Clé SIRENE refusée (401). Vérifiez Streamlit Secrets.")
+    if r.status_code == 403:
+        raise RuntimeError("Accès API SIRENE refusé (403). Vérifiez la souscription Accès public.")
+    if r.status_code == 429:
+        raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réessayez dans quelques secondes.")
+    raise RuntimeError(f"Erreur SIRENE succession : HTTP {r.status_code}: {r.text[:250]}")
+
+
+def _address_signature_from_raw(e):
+    addr = e.get("adresseEtablissement") or {}
+    return (
+        str(addr.get("numeroVoieEtablissement") or "").strip().upper(),
+        _norm_text(addr.get("typeVoieEtablissement") or ""),
+        _norm_text(addr.get("libelleVoieEtablissement") or ""),
+        str(addr.get("codePostalEtablissement") or "").strip(),
+    )
+
+
+def address_signature(address: str):
+    postal, number, street_type, street_name, _city = parse_address(address)
+    return (
+        str(number or "").strip().upper(),
+        _norm_text(street_type or ""),
+        _norm_text(street_name or ""),
+        str(postal or "").strip(),
+    )
+
+
+def history_periods_for_record(record):
+    """Flatten the historized periods of one SIRET for UI display."""
+    if not record:
+        return []
+    e = record.get("etablissement") or record
+    ul = e.get("uniteLegale") or {}
+    periods = e.get("periodesEtablissement") or []
+    out = []
+    for p in periods:
+        name = p.get("enseigne1Etablissement") or p.get("denominationUsuelleEtablissement") or ""
+        out.append({
+            "SIRET": e.get("siret", ""),
+            "Début": p.get("dateDebut", ""),
+            "Fin": p.get("dateFin", "") or "En cours",
+            "Statut": "Fermé" if p.get("etatAdministratifEtablissement") == "F" else "Actif",
+            "Enseigne / nom usuel": name,
+            "Entreprise": ul.get("denominationUniteLegale") or "",
+            "APE": p.get("activitePrincipaleEtablissement") or "",
+        })
+    return out
+
+
+def build_local_history(api_key: str, rows, target_address: str, max_seeds=10):
+    """Build a cautious local history from closed address matches and succession links.
+
+    The API is queried only for a limited number of seed establishments to respect
+    the public 30 requests/minute quota. Succession links are reported as links,
+    not as proof that two operators were the same business.
+    """
+    target_sig = address_signature(target_address)
+    closed = [r for r in rows if r.get("Statut") == "Fermé"]
+    active = [r for r in rows if r.get("Statut") == "Actif"]
+    seeds = (closed + active)[:max_seeds]
+    cache = {}
+    links_cache = {}
+
+    def fetch(siret):
+        if siret not in cache:
+            cache[siret] = get_establishment_history(api_key, siret)
+        return cache[siret]
+
+    def links(siret):
+        if siret not in links_cache:
+            links_cache[siret] = search_succession_links(api_key, siret)
+        return links_cache[siret]
+
+    timeline = []
+    succession_rows = []
+    seen = set()
+    for seed in seeds:
+        siret = seed.get("SIRET")
+        if not siret or siret in seen:
+            continue
+        record = fetch(siret)
+        if not record:
+            continue
+        e = record.get("etablissement") or record
+        if _address_signature_from_raw(e) == target_sig:
+            seen.add(siret)
+            timeline.extend(history_periods_for_record(record))
+        for link in links(siret):
+            pred = link.get("siretEtablissementPredecesseur", "")
+            succ = link.get("siretEtablissementSuccesseur", "")
+            other = succ if pred == siret else pred
+            if not other or other == siret:
+                continue
+            other_record = fetch(other)
+            other_e = (other_record or {}).get("etablissement") or (other_record or {})
+            if other_record and _address_signature_from_raw(other_e) == target_sig:
+                seen.add(other)
+                timeline.extend(history_periods_for_record(other_record))
+                succession_rows.append({
+                    "Prédécesseur": pred,
+                    "Successeur": succ,
+                    "Date du lien": link.get("dateLienSuccession", ""),
+                    "Continuité économique": "Oui" if link.get("continuiteEconomique") else "Non",
+                    "Transfert de siège": "Oui" if link.get("transfertSiege") else "Non",
+                })
+
+    # Deduplicate periods and sort newest first.
+    dedup = {(r["SIRET"], r["Début"], r["Fin"], r["APE"], r["Enseigne / nom usuel"]): r for r in timeline}
+    timeline = sorted(dedup.values(), key=lambda x: x.get("Début", ""), reverse=True)
+    return timeline, succession_rows, len(cache)
