@@ -1,4 +1,4 @@
-# Local Matcher V5.2.1
+# Local Matcher V5.3.1
 
 Version V5 : géolocalisation du local, analyse d'un rayon commercial, regroupement des établissements par grandes catégories, historique SIRENE à l'adresse exacte, chronologie historisée et liens de succession, puis matching activité / enseignes.
 
@@ -32,5 +32,5 @@ Ne jamais mettre la clé dans GitHub ou dans `app.py`.
 Les données SIRENE sont fournies par l'Insee et mises à jour quotidiennement. L'API publique permet notamment l'accès aux établissements actifs/fermés, aux variables historisées et aux liens de succession.
 
 
-## V5.2
+## V5.3
 Reconstruction de la chronologie à partir des périodes historisées déjà retournées par SIRENE, avec appels API supplémentaires limités aux cas nécessaires.

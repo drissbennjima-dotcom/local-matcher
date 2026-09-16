@@ -280,32 +280,27 @@ def history_periods_for_record(record):
 
 
 def build_local_history(api_key: str, rows, target_address: str, max_seeds=20):
-    """Build a cautious local history directly from historized SIRENE periods.
-
-    The address search already returns ``periodesEtablissement`` for each SIRET.
-    V5.2 uses those periods first instead of re-querying the same establishments,
-    which makes the chronology more reliable and avoids unnecessary API calls.
-    Detailed SIRET lookups are only used as a fallback when periods are missing.
-    Succession links are queried for a limited number of establishments.
-    """
-    target_sig = address_signature(target_address)
+    """Build a cautious local history from all available SIRENE period data."""
     seeds = [r for r in rows if r.get("SIRET")][:max_seeds]
     timeline = []
     succession_rows = []
     seen_sirets = set()
     calls = 0
 
-    # 1) Use historized periods already present in the address-search response.
+    # Use every historized period already returned by the address search.
     for row in seeds:
         siret = row.get("SIRET", "")
         periods = row.get("Historique périodes") or []
         if periods:
             seen_sirets.add(siret)
             for p in periods:
-                name = (p.get("enseigne1Etablissement") or
-                        p.get("enseigne2Etablissement") or
-                        p.get("enseigne3Etablissement") or
-                        p.get("denominationUsuelleEtablissement") or "")
+                name = (
+                    p.get("enseigne1Etablissement")
+                    or p.get("enseigne2Etablissement")
+                    or p.get("enseigne3Etablissement")
+                    or p.get("denominationUsuelleEtablissement")
+                    or ""
+                )
                 timeline.append({
                     "SIRET": siret,
                     "Début": p.get("dateDebut", ""),
@@ -314,12 +309,25 @@ def build_local_history(api_key: str, rows, target_address: str, max_seeds=20):
                     "Enseigne / nom usuel": name,
                     "Entreprise": row.get("Entreprise", ""),
                     "APE": p.get("activitePrincipaleEtablissement") or row.get("APE", ""),
+                    "Source": "Périodes SIRENE retournées à l'adresse",
                 })
+        else:
+            # Keep a current snapshot instead of incorrectly saying that
+            # there is no history.
+            seen_sirets.add(siret)
+            timeline.append({
+                "SIRET": siret,
+                "Début": row.get("Date création", ""),
+                "Fin": "En cours" if row.get("Statut") == "Actif" else "",
+                "Statut": row.get("Statut", ""),
+                "Enseigne / nom usuel": row.get("Enseigne / nom usuel", ""),
+                "Entreprise": row.get("Entreprise", ""),
+                "APE": row.get("APE", ""),
+                "Source": "Fiche établissement à l'adresse (sans périodes détaillées)",
+            })
 
-    # 2) Fallback: fetch detailed history only for records without periods.
+    # Detailed SIRET lookup only when the address search returned no periods.
     cache = {}
-    links_cache = {}
-
     def fetch(siret):
         nonlocal calls
         if siret not in cache:
@@ -332,15 +340,20 @@ def build_local_history(api_key: str, rows, target_address: str, max_seeds=20):
         if not siret or (row.get("Historique périodes") or []):
             continue
         record = fetch(siret)
-        if record:
-            timeline.extend(history_periods_for_record(record))
-            seen_sirets.add(siret)
+        detailed = history_periods_for_record(record)
+        if detailed:
+            timeline = [r for r in timeline if r.get("SIRET") != siret]
+            for item in detailed:
+                item["Source"] = "Historique détaillé SIRENE"
+            timeline.extend(detailed)
 
-    # 3) Succession links for a limited set of seed establishments.
+    # Succession links, limited to selected seed establishments.
     for siret in list(seen_sirets)[:max_seeds]:
-        if siret not in links_cache:
-            links_cache[siret] = search_succession_links(api_key, siret)
-        for link in links_cache[siret]:
+        try:
+            links = search_succession_links(api_key, siret)
+        except Exception:
+            links = []
+        for link in links:
             pred = link.get("siretEtablissementPredecesseur", "")
             succ = link.get("siretEtablissementSuccesseur", "")
             if not pred or not succ or pred == succ:
@@ -353,11 +366,14 @@ def build_local_history(api_key: str, rows, target_address: str, max_seeds=20):
                 "Transfert de siège": "Oui" if link.get("transfertSiege") else "Non",
             })
 
-    # Deduplicate periods and succession links.
-    dedup = {
-        (r["SIRET"], r["Début"], r["Fin"], r["APE"], r["Enseigne / nom usuel"], r["Statut"]): r
-        for r in timeline
-    }
+    dedup = {}
+    for r in timeline:
+        key = (
+            r.get("SIRET", ""), r.get("Début", ""), r.get("Fin", ""),
+            r.get("APE", ""), r.get("Enseigne / nom usuel", ""), r.get("Statut", "")
+        )
+        if key not in dedup or "Historique détaillé" in r.get("Source", ""):
+            dedup[key] = r
     timeline = list(dedup.values())
     timeline.sort(key=lambda x: (x.get("Début", ""), x.get("SIRET", "")), reverse=True)
 
