@@ -1,4 +1,4 @@
-# Local Matcher V5
+# Local Matcher V5.1
 
 Version V5 : géolocalisation du local, analyse d'un rayon commercial, regroupement des établissements par grandes catégories, historique SIRENE à l'adresse exacte, chronologie historisée et liens de succession, puis matching activité / enseignes.
 

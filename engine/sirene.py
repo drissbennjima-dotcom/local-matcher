@@ -23,7 +23,12 @@ def parse_address(address: str):
         street_part = raw[:m.start()].strip(" ,")
         city = raw[m.end():].strip(" ,")
     else:
-        street_part = raw
+        # Support addresses entered as "20 rue X, Ville" even without a postcode.
+        # Keeping the city separate prevents it from being included in the street name.
+        if "," in raw:
+            street_part, city = [part.strip(" ,") for part in raw.split(",", 1)]
+        else:
+            street_part = raw
 
     m_num = re.match(r"^(\d+[A-Za-z]?)\s+(.*)$", street_part)
     number = m_num.group(1) if m_num else None
