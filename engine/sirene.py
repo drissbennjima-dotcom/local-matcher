@@ -54,11 +54,34 @@ def _street_query(street: str):
     return street
 
 
-def search_establishments(api_key: str, address: str, include_closed=True, max_results=100):
-    """Search SIRENE establishments by French address.
+def _request_siret_query(api_key: str, q: str, max_results: int, headers: dict):
+    """Execute one SIRENE /siret query and normalize 'no result' as empty."""
+    params = {"q": q, "nombre": min(int(max_results), 1000)}
+    try:
+        r = requests.get(f"{BASE_URL}/siret", params=params, headers=headers, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Erreur réseau SIRENE : {exc}") from exc
 
-    SIRENE may return HTTP 404 when a query has no matching element. This is
-    treated as an empty result and the next, looser query variant is tried.
+    if r.status_code == 200:
+        payload = r.json()
+        return payload.get("etablissements", [])
+    if r.status_code == 404:
+        return []
+    if r.status_code == 401:
+        raise RuntimeError("Clé SIRENE refusée (401). Vérifiez la clé dans Streamlit Secrets.")
+    if r.status_code == 403:
+        raise RuntimeError("Accès API SIRENE refusé (403). Vérifiez la souscription Accès public.")
+    if r.status_code == 429:
+        raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réessayez dans quelques secondes.")
+    raise RuntimeError(f"Erreur lors de l'appel à SIRENE : HTTP {r.status_code}: {r.text[:250]}")
+
+
+def search_establishments(api_key: str, address: str, include_closed=True, max_results=100):
+    """Search active and, optionally, closed SIRENE establishments at an address.
+
+    V3.2 explicitly searches the administrative status so that closed establishments
+    are not lost when the API returns only the currently active records for a broad
+    address query. Results are deduplicated by SIRET.
     """
     if not api_key:
         raise ValueError("Clé SIRENE absente. Ajoutez SIRENE_API_KEY dans Streamlit Secrets.")
@@ -67,65 +90,85 @@ def search_establishments(api_key: str, address: str, include_closed=True, max_r
 
     postal, number, street_type, street_name, city = parse_address(address)
 
-    clauses = []
+    base_clauses = []
     if postal:
-        clauses.append(f"codePostalEtablissement:{postal}")
+        base_clauses.append(f"codePostalEtablissement:{postal}")
     if city:
-        clauses.append(f'libelleCommuneEtablissement:"{city}"')
+        base_clauses.append(f'libelleCommuneEtablissement:"{city}"')
     if number:
-        clauses.append(f"numeroVoieEtablissement:{number}")
+        base_clauses.append(f"numeroVoieEtablissement:{number}")
     if street_type:
-        clauses.append(f"typeVoieEtablissement:{street_type}")
+        base_clauses.append(f"typeVoieEtablissement:{street_type}")
     if street_name:
-        clauses.append(f'libelleVoieEtablissement:"{street_name}"')
+        base_clauses.append(f'libelleVoieEtablissement:"{street_name}"')
 
-    queries = []
-    if clauses:
-        queries.append(" AND ".join(clauses))
+    if not base_clauses:
+        return [], "Adresse insuffisante pour une recherche SIRENE."
+
+    # Most precise query first. If no result, progressively relax the address.
+    address_variants = [base_clauses]
     if postal and number and street_name:
-        queries.append(
-            f'codePostalEtablissement:{postal} AND numeroVoieEtablissement:{number} '
-            f'AND libelleVoieEtablissement:"{street_name}"'
-        )
+        address_variants.append([
+            f"codePostalEtablissement:{postal}",
+            f"numeroVoieEtablissement:{number}",
+            f'libelleVoieEtablissement:"{street_name}"',
+        ])
     if postal and street_name:
-        queries.append(f'codePostalEtablissement:{postal} AND libelleVoieEtablissement:"{street_name}"')
+        address_variants.append([
+            f"codePostalEtablissement:{postal}",
+            f'libelleVoieEtablissement:"{street_name}"',
+        ])
     if number and street_name:
-        queries.append(f'numeroVoieEtablissement:{number} AND libelleVoieEtablissement:"{street_name}"')
+        address_variants.append([
+            f"numeroVoieEtablissement:{number}",
+            f'libelleVoieEtablissement:"{street_name}"',
+        ])
     if street_name:
-        queries.append(f'libelleVoieEtablissement:"{street_name}"')
+        address_variants.append([f'libelleVoieEtablissement:"{street_name}"'])
 
-    queries = list(dict.fromkeys(queries))
+    # Avoid making the last, street-only fallback too broad when a precise
+    # address query has already produced results.
     headers = {
         "X-INSEE-Api-Key-Integration": api_key,
         "Accept": "application/json",
     }
 
-    last_nonempty_error = None
-    for q in queries:
-        params = {"q": q, "nombre": min(int(max_results), 1000)}
-        try:
-            r = requests.get(f"{BASE_URL}/siret", params=params, headers=headers, timeout=TIMEOUT)
-            if r.status_code == 200:
-                payload = r.json()
-                establishments = payload.get("etablissements", [])
-                if establishments:
-                    return establishments, q
-                continue
-            if r.status_code == 404:
-                continue
-            if r.status_code == 401:
-                raise RuntimeError("Clé API SIRENE refusée (401). Vérifiez la clé dans Streamlit Secrets.")
-            if r.status_code == 403:
-                raise RuntimeError("Accès API SIRENE refusé (403). Vérifiez la souscription Accès public.")
-            if r.status_code == 429:
-                raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réessayez dans quelques secondes.")
-            last_nonempty_error = f"HTTP {r.status_code}: {r.text[:250]}"
-        except requests.RequestException as exc:
-            last_nonempty_error = str(exc)
+    statuses = ["A"]
+    if include_closed:
+        statuses.append("F")
 
-    if last_nonempty_error:
-        raise RuntimeError(f"Erreur lors de l'appel à SIRENE : {last_nonempty_error}")
-    return [], queries[-1] if queries else ""
+    all_results = {}
+    queries_used = []
+
+    for status in statuses:
+        found_for_status = []
+        used_query = None
+        for clauses in address_variants:
+            q = " AND ".join(clauses + [f"etatAdministratifEtablissement:{status}"])
+            establishments = _request_siret_query(api_key, q, max_results, headers)
+            if establishments:
+                found_for_status = establishments
+                used_query = q
+                break
+        queries_used.append(f"{status}: {used_query or 'aucun résultat'}")
+        for e in found_for_status:
+            siret = e.get("siret")
+            if siret:
+                all_results[siret] = e
+
+    # If the explicit active query found nothing, retain the possibility of a
+    # broad unfiltered query as a final compatibility fallback.
+    if not all_results:
+        q = " AND ".join(base_clauses)
+        establishments = _request_siret_query(api_key, q, max_results, headers)
+        for e in establishments:
+            siret = e.get("siret")
+            if siret:
+                all_results[siret] = e
+        if establishments:
+            queries_used.append(f"fallback: {q}")
+
+    return list(all_results.values()), " | ".join(queries_used)
 
 def flatten_establishments(establishments):
     rows = []

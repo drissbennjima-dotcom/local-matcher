@@ -4,8 +4,8 @@ import pandas as pd
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import search_establishments, flatten_establishments, summarize_history
 
-st.set_page_config(page_title="Local Matcher V3", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V3")
+st.set_page_config(page_title="Local Matcher V3.2", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V3.2")
 st.caption("SIRENE réel → ancien occupant → activité → profil technique → enseignes compatibles")
 
 activities = pd.read_csv("data/activites.csv")
@@ -44,7 +44,7 @@ if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
     else:
-        if st.button("Rechercher les établissements à cette adresse", type="primary"):
+        if st.button("Rechercher actifs + anciens occupants à cette adresse", type="primary"):
             with st.spinner("Interrogation de SIRENE…"):
                 try:
                     raw, query_used = search_establishments(api_key, address, max_results=100)
@@ -67,7 +67,7 @@ if rows:
 
     closed = [r for r in rows if r["Statut"] == "Fermé"]
     active = [r for r in rows if r["Statut"] == "Actif"]
-    st.info(f"**{len(closed)} fermé(s)** · **{len(active)} actif(s)**. Un établissement fermé peut servir d'ancien occupant ; l'activité et l'enseigne restent à interpréter à partir de l'historique SIRENE.")
+    st.info(f"**{len(closed)} fermé(s)** · **{len(active)} actif(s)**. V3.2 interroge explicitement les deux statuts ; un établissement fermé peut servir d'ancien occupant et son historique SIRENE peut préciser l'activité ou l'enseigne.")
 
     labels = []
     for i, r in enumerate(closed):
@@ -126,7 +126,7 @@ if st.session_state.get("chosen_sirene"):
     export["ancien_occupant_sirene"] = c.get("Enseigne / nom usuel", "") or c.get("Entreprise", "")
     export["ancien_ape_sirene"] = c.get("APE", "")
 
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v3.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v3_2.csv", "text/csv")
 
 st.divider()
 st.markdown("### Architecture actuelle\n`SIRENE → établissement à l'adresse → actif/fermé → ancien occupant → APE/historique → matching enseignes`\n\n### Architecture cible\n`SIRENE → établissement fermé → adresse → parcelle → propriétaire personne morale → SIREN → matching enseignes`")
