@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
 
+from engine.commercial import add_commercial_category, COMMERCIAL_CATEGORIES
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import search_establishments, search_commune_active, flatten_establishments, summarize_history
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V4", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V4")
-st.caption("Local cible → géolocalisation → zone commerciale → SIRENE → historique → matching")
+st.set_page_config(page_title="Local Matcher V4.2", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V4.2")
+st.caption("Local cible → géolocalisation → zone commerciale → SIRENE → analyse commerciale → historique → matching")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -58,6 +59,8 @@ if st.button("Analyser le local et son environnement", type="primary"):
             with st.spinner("Recherche SIRENE des établissements de la commune puis filtrage par rayon…"):
                 raw_zone = search_commune_active(api_key, geo["citycode"], max_pages=max_pages)
                 zone_rows = flatten_establishments(raw_zone)
+                zone_rows = add_commercial_category(zone_rows)
+                st.session_state["zone_coord_count"] = sum(1 for r in zone_rows if r.get("lat") is not None and r.get("lon") is not None)
                 filtered = []
                 for r in zone_rows:
                     if r.get("lat") is None or r.get("lon") is None:
@@ -76,25 +79,73 @@ geo = st.session_state.get("geo")
 zone_rows = st.session_state.get("zone_rows", [])
 if geo:
     st.markdown(f"**Centre :** {geo['label']} · **Rayon :** {radius} m")
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Établissements dans le rayon", len(zone_rows))
     c2.metric("Commune interrogée", geo.get("city", "NC"))
     c3.metric("Coordonnées", f"{geo['lat']:.5f}, {geo['lon']:.5f}")
+    commune_total = st.session_state.get("zone_total_commune", 0)
+    coord_total = st.session_state.get("zone_coord_count", 0)
+    coverage = (coord_total / commune_total * 100) if commune_total else 0
+    c4.metric("Couverture géographique", f"{coverage:.0f}%")
 
     if zone_rows:
+        # Carte allégée : petits points pour éviter le nuage rouge illisible.
         map_df = pd.DataFrame([{"lat": r["lat"], "lon": r["lon"]} for r in zone_rows])
-        st.map(map_df, latitude="lat", longitude="lon", zoom=14)
+        try:
+            import pydeck as pdk
+            layers = [
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=map_df,
+                    get_position="[lon, lat]",
+                    get_radius=10,
+                    get_fill_color=[220, 60, 45, 130],
+                    pickable=True,
+                ),
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=pd.DataFrame([{"lat": geo["lat"], "lon": geo["lon"]}]),
+                    get_position="[lon, lat]",
+                    get_radius=35,
+                    get_fill_color=[30, 30, 30, 220],
+                    pickable=False,
+                ),
+            ]
+            view = pdk.ViewState(latitude=geo["lat"], longitude=geo["lon"], zoom=15)
+            st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view, tooltip={"text": "Établissement"}), use_container_width=True)
+        except Exception:
+            st.map(map_df, latitude="lat", longitude="lon", zoom=14)
 
         zone_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in zone_rows])
         if not zone_df.empty:
-            zone_df["Catégorie APE"] = zone_df["APE"].fillna("").astype(str).str[:2]
             st.markdown("### 📊 Composition de la zone")
-            counts = zone_df["Catégorie APE"].replace("", "NC").value_counts().head(15).rename_axis("APE").reset_index(name="Établissements")
-            st.dataframe(counts, use_container_width=True, hide_index=True)
+            category_counts = (
+                zone_df["Catégorie commerciale"]
+                .value_counts()
+                .rename_axis("Catégorie")
+                .reset_index(name="Établissements")
+            )
+            category_counts["Part"] = (category_counts["Établissements"] / len(zone_df) * 100).round(1).astype(str) + "%"
+            st.dataframe(category_counts, use_container_width=True, hide_index=True)
+
+            commercial_df = zone_df[zone_df["Catégorie commerciale"].isin(COMMERCIAL_CATEGORIES)].copy()
+            st.markdown("### 🏪 Lecture commerciale")
+            if commercial_df.empty:
+                st.info("Aucune catégorie commerciale sélectionnée n'a été détectée dans le rayon selon le regroupement APE utilisé.")
+            else:
+                cc = commercial_df["Catégorie commerciale"].value_counts().rename_axis("Catégorie").reset_index(name="Établissements")
+                cc["Part du périmètre commercial"] = (cc["Établissements"] / len(commercial_df) * 100).round(1).astype(str) + "%"
+                st.dataframe(cc, use_container_width=True, hide_index=True)
+                low = cc[cc["Établissements"] <= max(3, int(len(commercial_df) * 0.05))]
+                if not low.empty:
+                    st.markdown("**Catégories peu représentées dans le périmètre commercial**")
+                    st.write(" · ".join(low["Catégorie"].tolist()))
+                    st.caption("Il s'agit de signaux descriptifs basés sur les établissements SIRENE récupérés, pas d'une preuve de demande locale ou d'une opportunité commerciale.")
+
             st.markdown("### 🏪 Établissements proches")
-            cols = [c for c in ["Distance (m)", "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Adresse"] if c in zone_df.columns]
+            cols = [c for c in ["Distance (m)", "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Catégorie commerciale", "Adresse"] if c in zone_df.columns]
             st.dataframe(zone_df.sort_values("Distance (m)")[cols].head(200), use_container_width=True, hide_index=True)
-            st.caption("La zone est calculée à partir des coordonnées géographiques diffusées par Sirene et d'une distance à vol d'oiseau. Les résultats dépendent de la couverture géographique disponible pour les établissements.")
+            st.caption("La zone est calculée à partir des coordonnées géographiques diffusées par Sirene et d'une distance à vol d'oiseau. La catégorie commerciale est un regroupement analytique de l'APE ; elle ne remplace pas une vérification terrain.")
     else:
         st.warning("Aucun établissement géolocalisé n'a été trouvé dans ce rayon. Essayez un rayon supérieur.")
 
@@ -180,7 +231,7 @@ if st.session_state.get("chosen_sirene"):
     export["ancien_siren_sirene"] = c.get("SIREN", "")
     export["ancien_occupant_sirene"] = c.get("Enseigne / nom usuel", "") or c.get("Entreprise", "")
     export["ancien_ape_sirene"] = c.get("APE", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v4.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v4_2.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V4\n`Adresse → géocodage → commune → SIRENE géolocalisé → rayon → environnement commercial → historique local → matching`\n\n### Architecture cible\n`Local → zone → historique → parcelle → propriétaire → prospects → enseignes`")
+st.markdown("### Architecture V4.2\n`Adresse → géocodage → commune → SIRENE géolocalisé → rayon → environnement commercial → historique local → matching`\n\n### Architecture cible\n`Local → zone → historique → parcelle → propriétaire → prospects → enseignes`")
