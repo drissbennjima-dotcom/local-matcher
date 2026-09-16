@@ -1,0 +1,10 @@
+brand,category,surface_min,surface_max,presence,presence_score
+Enseigne alimentaire A,Alimentaire,150,800,Paris,0.80
+Enseigne alimentaire B,Alimentaire,200,500,Paris,0.70
+Enseigne restauration A,Restauration,80,400,Paris,0.85
+Enseigne restauration B,Restauration,100,300,Paris,0.65
+Enseigne discount A,Retail,500,1500,Paris,0.75
+Enseigne sport A,Sport,500,2500,Paris,0.55
+Enseigne mode A,Mode,100,1000,Paris,0.80
+Enseigne beauté A,Beauté,50,300,Paris,0.70
+Enseigne maison A,Retail,300,2000,Paris,0.60

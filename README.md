@@ -1,6 +1,6 @@
-# Local Matcher V4.2
+# Local Matcher V4.3
 
-Version V4.2 : géolocalisation du local, analyse d'un rayon commercial, regroupement des établissements par grandes catégories, historique SIRENE à l'adresse exacte et matching activité / enseignes.
+Version V4.3 : géolocalisation du local, analyse d'un rayon commercial, regroupement des établissements par grandes catégories, historique SIRENE à l'adresse exacte et matching activité / enseignes.
 
 ## Fonctionnement
 1. Géocodage de l'adresse via le service de géocodage de la Géoplateforme.
