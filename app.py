@@ -4,8 +4,8 @@ import pandas as pd
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import search_establishments, flatten_establishments, summarize_history
 
-st.set_page_config(page_title="Local Matcher V3.2", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V3.2")
+st.set_page_config(page_title="Local Matcher V3.3", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V3.3")
 st.caption("SIRENE réel → ancien occupant → activité → profil technique → enseignes compatibles")
 
 activities = pd.read_csv("data/activites.csv")
@@ -67,7 +67,7 @@ if rows:
 
     closed = [r for r in rows if r["Statut"] == "Fermé"]
     active = [r for r in rows if r["Statut"] == "Actif"]
-    st.info(f"**{len(closed)} fermé(s)** · **{len(active)} actif(s)**. V3.2 interroge explicitement les deux statuts ; un établissement fermé peut servir d'ancien occupant et son historique SIRENE peut préciser l'activité ou l'enseigne.")
+    st.info(f"**{len(closed)} fermé(s)** · **{len(active)} actif(s)**. V3.3 interroge explicitement les deux statuts ; un établissement fermé peut servir d'ancien occupant et son historique SIRENE peut préciser l'activité ou l'enseigne.")
 
     labels = []
     for i, r in enumerate(closed):

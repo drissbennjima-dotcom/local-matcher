@@ -144,7 +144,7 @@ def search_establishments(api_key: str, address: str, include_closed=True, max_r
         found_for_status = []
         used_query = None
         for clauses in address_variants:
-            q = " AND ".join(clauses + [f"etatAdministratifEtablissement:{status}"])
+            q = " AND ".join(clauses + [f"periode(etatAdministratifEtablissement:{status})"])
             establishments = _request_siret_query(api_key, q, max_results, headers)
             if establishments:
                 found_for_status = establishments
