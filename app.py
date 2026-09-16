@@ -10,8 +10,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.2", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.2")
+st.set_page_config(page_title="Local Matcher V5.3.1", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.3.1")
 st.caption("Local cible → géolocalisation → zone commerciale → SIRENE → historique du local → matching")
 
 activities = pd.read_csv("data/activites.csv")
@@ -177,7 +177,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V5 distingue les établissements actifs/fermés trouvés à l'adresse, leur historique SIRENE et les liens de succession lorsqu'ils sont disponibles.")
+st.caption("V5.3.1 distingue la recherche à l'adresse exacte, l'historique SIRENE et les liens de succession. Une recherche exacte ne doit pas mélanger les établissements d'une autre adresse.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
@@ -188,6 +188,7 @@ if use_sirene:
                 rows = flatten_establishments(raw)
                 st.session_state["sirene_rows"] = rows
                 st.session_state["sirene_query"] = query_used
+                st.session_state["sirene_scope"] = "Adresse exacte" if rows else "Aucun résultat exact"
                 st.session_state.pop("local_timeline", None)
                 st.session_state.pop("local_succession", None)
                 if rows:
@@ -200,6 +201,7 @@ if use_sirene:
 rows = st.session_state.get("sirene_rows", [])
 if rows:
     sirene_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in rows])
+    st.caption(f"Périmètre : **{st.session_state.get('sirene_scope', 'Adresse exacte')}**")
     st.caption(f"Requêtes SIRENE : `{st.session_state.get('sirene_query','')}`")
     st.dataframe(sirene_df, use_container_width=True, hide_index=True)
     closed = [r for r in rows if r["Statut"] == "Fermé"]
@@ -221,7 +223,7 @@ if rows:
     if timeline:
         st.markdown("### 🧭 Chronologie détectée du local")
         st.dataframe(pd.DataFrame(timeline), use_container_width=True, hide_index=True)
-        st.caption(f"Chronologie construite à partir des périodes historisées SIRENE déjà retournées à l'adresse. {st.session_state.get('local_history_calls', 0)} interrogation(s) SIRENE détaillée(s) supplémentaire(s). Les périodes SIRENE décrivent l'établissement ; elles ne constituent pas à elles seules une preuve juridique d'occupation physique du local.")
+        st.caption(f"Chronologie construite à partir des périodes historisées SIRENE du périmètre **{st.session_state.get('sirene_scope', 'adresse exacte')}**. {st.session_state.get('local_history_calls', 0)} interrogation(s) SIRENE détaillée(s) supplémentaire(s). Les périodes SIRENE décrivent l'établissement ; elles ne constituent pas à elles seules une preuve juridique d'occupation physique du local.")
     else:
         st.warning("Aucune donnée de période exploitable n'a pu être reconstituée pour les établissements sélectionnés. Cela ne signifie pas qu'il n'existe aucun historique à cette adresse.")
 
@@ -286,4 +288,4 @@ if st.session_state.get("chosen_sirene"):
 st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_3.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V5.3\n`Adresse → géocodage → commune → SIRENE géolocalisé → rayon → environnement commercial → historique local → succession → matching`\n\n### Architecture cible\n`Local → zone → historique → parcelle → propriétaire → prospects → enseignes`")
+st.markdown("### Architecture V5.3.1\n`Adresse exacte → géocodage → commune → SIRENE géolocalisé → rayon → environnement commercial → historique exact → succession → matching`\n\n### Architecture cible\n`Local → zone → historique → parcelle → propriétaire → prospects → enseignes`")

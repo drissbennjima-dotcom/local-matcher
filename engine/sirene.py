@@ -84,11 +84,16 @@ def search_establishments(api_key: str, address: str, include_closed=True, max_r
     if not base:
         return [], "Adresse insuffisante pour une recherche SIRENE."
 
+    # When a street number is supplied, keep the first search strictly tied to
+    # that number. We do not silently broaden an exact-address history search
+    # to the whole street, because that can mix different premises.
     variants = [base]
     if postal and number and street_name:
-        variants.append([f"codePostalEtablissement:{postal}", f"numeroVoieEtablissement:{number}", f'libelleVoieEtablissement:"{street_name}"'])
-    if postal and street_name:
-        variants.append([f"codePostalEtablissement:{postal}", f'libelleVoieEtablissement:"{street_name}"'])
+        variants.append([
+            f"codePostalEtablissement:{postal}",
+            f"numeroVoieEtablissement:{number}",
+            f'libelleVoieEtablissement:"{street_name}"'
+        ])
 
     all_results = {}
     used = []
