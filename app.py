@@ -15,8 +15,8 @@ from engine.owner import search_moral_owners
 from engine.dvf import search_dvf_by_parcel, dvf_signal
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V10.2", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V10.2")
+st.set_page_config(page_title="Local Matcher V10.3", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V10.3")
 st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → détenteur de droits → DVF")
 
 activities = pd.read_csv("data/activites.csv")
@@ -439,10 +439,10 @@ if geo:
         else:
             st.info("Aucune personne morale retrouvée sur cette parcelle dans la base interrogée. Un propriétaire particulier peut notamment ne pas apparaître dans cette donnée.")
 
-        # --- V10.2 : signal de mutation DVF ---
-        st.markdown("### 💶 Transactions foncières DVF sur la parcelle")
+        # --- V10.3 : signal de mutation DVF+ Cerema ---
+        st.markdown("### 💶 Transactions foncières DVF+ sur la parcelle")
         try:
-            dvf_rows = search_dvf_by_parcel(parcel.get("Parcelle cadastrale"))
+            dvf_rows = search_dvf_by_parcel(parcel.get("Parcelle cadastrale"), lat=geo.get("lat"), lon=geo.get("lon"))
             st.session_state["dvf_rows"] = dvf_rows
             st.session_state["dvf_error"] = ""
         except Exception as exc:
@@ -458,11 +458,11 @@ if geo:
             st.dataframe(dvf_df[cols].head(30), use_container_width=True, hide_index=True)
             sig = dvf_signal(dvf_rows)
             st.info(f"**{sig['Statut DVF']}** · Dernière mutation : **{sig['Dernière mutation DVF'] or 'NC'}** · {sig['Signal changement propriétaire']}")
-            st.caption("DVF recense les transactions immobilières, mais ne fournit pas le nom de l'acheteur ou du vendeur. Une mutation est donc un signal de changement de propriétaire potentiel, pas une identification du nouveau propriétaire.")
+            st.caption("DVF+ recense les transactions immobilières, mais ne fournit pas le nom de l'acheteur ou du vendeur. Une mutation est donc un signal de changement de propriétaire potentiel, pas une identification du nouveau propriétaire.")
         elif st.session_state.get("dvf_error"):
-            st.warning(f"Données DVF temporairement indisponibles : {st.session_state['dvf_error']}")
+            st.warning(f"Données DVF+ temporairement indisponibles : {st.session_state['dvf_error']}")
         else:
-            st.info("Aucune mutation DVF retrouvée sur cette parcelle dans la période couverte par la base interrogée.")
+            st.info("Aucune mutation DVF retrouvée sur cette parcelle dans la période couverte par la base DVF+ interrogée.")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Actifs dans le rayon", len(zone_rows))
     c2.metric("Fermés dans le rayon", len(zone_closed_rows))
@@ -767,7 +767,7 @@ if dvf_rows:
     export["derniere_mutation_dvf"] = sig.get("Dernière mutation DVF", "")
     export["nature_derniere_mutation_dvf"] = sig.get("Nature dernière mutation", "")
     export["signal_changement_proprietaire_dvf"] = sig.get("Signal changement propriétaire", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_2.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_3.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V10.2\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")
+st.markdown("### Architecture V10.3\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")

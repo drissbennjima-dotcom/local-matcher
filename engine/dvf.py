@@ -1,17 +1,14 @@
-import time
 from datetime import date
 
 import requests
 
-# Micro-API DVF (preuve de concept publique).
-# La disponibilité n'est pas garantie : on ajoute donc des retries et un fallback
-# par section cadastrale avant de considérer le service indisponible.
-BASE_URLS = [
-    "https://api.cquest.org/dvf",
-    "http://api.cquest.org/dvf",
-]
-TIMEOUT = 15
-RETRIES = 2
+# API Données foncières du Cerema — DVF+ open-data.
+# DVF+ est un flux ouvert et géolocalisé. On interroge une petite emprise
+# autour du point géocodé puis on conserve uniquement la parcelle demandée.
+BASE_URL = "https://apidf.cerema.fr"
+TIMEOUT = 20
+MAX_PAGES = 8
+PAGE_SIZE = 500
 
 
 def _clean(value):
@@ -20,135 +17,151 @@ def _clean(value):
     return str(value).strip()
 
 
-def _request(params):
-    last_error = None
-    for base_url in BASE_URLS:
-        for attempt in range(RETRIES + 1):
-            try:
-                r = requests.get(
-                    base_url,
-                    params=params,
-                    timeout=TIMEOUT,
-                    headers={
-                        "Accept": "application/json",
-                        "User-Agent": "Local-Matcher/10.2",
-                    },
-                )
-                if r.status_code == 200:
-                    try:
-                        return r.json()
-                    except ValueError as exc:
-                        last_error = RuntimeError("Réponse DVF illisible")
-                        if attempt < RETRIES:
-                            time.sleep(0.8 * (attempt + 1))
-                            continue
-                        raise last_error from exc
-
-                last_error = RuntimeError(f"HTTP {r.status_code}")
-                # 5xx = service temporairement indisponible : on retente.
-                if r.status_code >= 500 and attempt < RETRIES:
-                    time.sleep(0.8 * (attempt + 1))
-                    continue
-                break
-            except requests.RequestException as exc:
-                last_error = RuntimeError(f"connexion impossible : {exc}")
-                if attempt < RETRIES:
-                    time.sleep(0.8 * (attempt + 1))
-                    continue
-                break
-
-    raise RuntimeError(f"Service DVF temporairement indisponible ({last_error or 'erreur inconnue'})")
+def _normalise_parcelle(value):
+    return "".join(ch for ch in _clean(value).upper() if ch.isalnum())
 
 
-def _rows_from_payload(payload, size=200):
-    rows = payload.get("resultats", []) or payload.get("features", []) or []
-    if isinstance(rows, dict):
-        rows = [rows]
-
-    out = []
-    seen = set()
-    for raw in rows[: max(1, min(int(size), 200))]:
-        props = raw.get("properties", raw) if isinstance(raw, dict) else {}
-        mutation_id = _clean(props.get("id_mutation"))
-        key = (
-            mutation_id,
-            _clean(props.get("date_mutation")),
-            _clean(props.get("numero_disposition")),
-            _clean(props.get("valeur_fonciere")),
-            _clean(props.get("id_parcelle") or props.get("numero_plan")),
-            _clean(props.get("type_local")),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "ID mutation": mutation_id,
-            "Date mutation": _clean(props.get("date_mutation")),
-            "Nature mutation": _clean(props.get("nature_mutation")),
-            "Valeur foncière (€)": props.get("valeur_fonciere", ""),
-            "Type local": _clean(props.get("type_local")),
-            "Surface bâtie (m²)": props.get("surface_reelle_bati", ""),
-            "Surface terrain (m²)": props.get("surface_terrain", ""),
-            "Nombre de lots": props.get("nombre_lots", ""),
-            "Parcelle": _clean(props.get("id_parcelle") or props.get("numero_plan")),
-            "Adresse mutation": " ".join(
-                x for x in [
-                    _clean(props.get("adresse_numero")),
-                    _clean(props.get("adresse_suffixe")),
-                    _clean(props.get("adresse_nom_voie")),
-                ] if x
-            ),
-            "Commune": _clean(props.get("nom_commune")),
-        })
-    out.sort(key=lambda x: x.get("Date mutation", ""), reverse=True)
-    return out
+def _parcel_in_value(value, parcel_code):
+    target = _normalise_parcelle(parcel_code)
+    if not target:
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(_parcel_in_value(v, target) for v in value)
+    text = _clean(value)
+    if not text:
+        return False
+    # Les champs l_idpar / l_idparmut peuvent être des listes sérialisées.
+    normalised = _normalise_parcelle(text)
+    return target == normalised or target in normalised
 
 
-def search_dvf_by_parcel(parcel_code: str, size: int = 50):
-    """Return DVF transactions linked to a cadastral parcel.
-
-    Primary query: exact parcel. Fallback: cadastral section, then filter
-    returned rows back to the requested parcel. Buyer/seller identities are
-    not inferred from DVF open data.
-    """
-    code = _clean(parcel_code).upper()
-    if not code:
+def _payload_rows(payload):
+    if not isinstance(payload, dict):
         return []
-
-    # Format attendu : code INSEE (5) + section (4) + parcelle (4).
-    # Exemple Mondeville : 14437 + CE + 0138 => 14437000CE0138.
-    code_commune = code[:5] if len(code) >= 5 else ""
-    section = code[5:9] if len(code) >= 9 else ""
-
-    try:
-        payload = _request({"numero_plan": code})
-        rows = _rows_from_payload(payload, size)
-        if rows:
+    for key in ("results", "resultats", "data", "items", "features"):
+        rows = payload.get(key)
+        if isinstance(rows, list):
             return rows
-    except RuntimeError as primary_error:
-        # Fallback par section : utile si l'API refuse ponctuellement le
-        # filtre parcelle mais reste capable de répondre sur la section.
-        if code_commune and section:
-            try:
-                payload = _request({"section": f"{code_commune}{section}"})
-                rows = _rows_from_payload(payload, 200)
-                filtered = [r for r in rows if _clean(r.get("Parcelle")).upper() == code]
-                return filtered[: max(1, min(int(size), 200))]
-            except RuntimeError as fallback_error:
-                raise RuntimeError(
-                    "DVF temporairement indisponible après nouvelle tentative "
-                    f"et fallback cadastral ({fallback_error})"
-                ) from primary_error
-        raise
-
     return []
 
 
+def _request(params):
+    try:
+        response = requests.get(
+            f"{BASE_URL}/dvf_opendata/mutations",
+            params=params,
+            timeout=TIMEOUT,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Local-Matcher/10.3",
+            },
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"connexion impossible à l'API DVF+ Cerema : {exc}") from exc
+
+    if response.status_code == 429:
+        raise RuntimeError("API DVF+ temporairement limitée (429).")
+    if response.status_code >= 400:
+        detail = response.text[:250].replace("\n", " ")
+        raise RuntimeError(f"API DVF+ : HTTP {response.status_code} ({detail})")
+
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError("Réponse DVF+ illisible.") from exc
+
+
+def _extract_rows(parcel_code, payload):
+    rows = []
+    for raw in _payload_rows(payload):
+        if not isinstance(raw, dict):
+            continue
+        props = raw.get("properties", raw)
+        if not isinstance(props, dict):
+            continue
+
+        parcel_values = [
+            props.get("idpar"),
+            props.get("id_parcelle"),
+            props.get("numero_plan"),
+            props.get("l_idpar"),
+            props.get("l_idparmut"),
+        ]
+        if not any(_parcel_in_value(v, parcel_code) for v in parcel_values):
+            continue
+
+        rows.append({
+            "ID mutation": _clean(props.get("idmutation") or props.get("id_mutation")),
+            "Date mutation": _clean(props.get("datemut") or props.get("date_mutation")),
+            "Année mutation": _clean(props.get("anneemut") or props.get("annee_mutation")),
+            "Nature mutation": _clean(props.get("libnatmut") or props.get("nature_mutation") or props.get("lib_nature_mutation")),
+            "Valeur foncière (€)": props.get("valeurfonc", props.get("valeur_fonciere", "")),
+            "Type de bien": _clean(props.get("libtypbien") or props.get("type_local")),
+            "Surface bâtie (m²)": props.get("sbati", props.get("surface_reelle_bati", "")),
+            "Surface terrain (m²)": props.get("sterr", props.get("surface_terrain", "")),
+            "Nombre de lots": props.get("nblot", props.get("nombre_lots", "")),
+            "Parcelle": _clean(props.get("idpar") or props.get("id_parcelle") or parcel_code),
+            "Commune": _clean(props.get("nomcomm") or props.get("nom_commune") or props.get("commune")),
+        })
+
+    # Déduplication par mutation + date + valeur.
+    dedup = {}
+    for row in rows:
+        key = (row["ID mutation"], row["Date mutation"], row["Valeur foncière (€)"])
+        dedup[key] = row
+    rows = list(dedup.values())
+    rows.sort(key=lambda r: r.get("Date mutation", ""), reverse=True)
+    return rows
+
+
+def search_dvf_by_parcel(parcel_code: str, lat=None, lon=None, size: int = 50):
+    """Retourne les mutations DVF+ liées à une parcelle cadastrale.
+
+    La recherche utilise l'API ouverte DVF+ du Cerema sur une petite emprise
+    autour du point géocodé, puis filtre strictement sur l'identifiant cadastral.
+    Cela évite de dépendre d'une API tierce de type micro-service.
+    """
+    code = _normalise_parcelle(parcel_code)
+    if not code:
+        return []
+    if lat is None or lon is None:
+        raise RuntimeError("Coordonnées du local nécessaires pour interroger DVF+.")
+
+    lat = float(lat)
+    lon = float(lon)
+    # Environ 150–250 m autour du point, en restant très sous la limite de 0,02°.
+    delta = 0.0025
+    bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
+
+    all_rows = []
+    for page in range(1, MAX_PAGES + 1):
+        payload = _request({
+            "in_bbox": ",".join(f"{v:.6f}" for v in bbox),
+            "fields": "all",
+            "page": page,
+            "page_size": PAGE_SIZE,
+        })
+        page_rows = _extract_rows(code, payload)
+        all_rows.extend(page_rows)
+
+        raw_count = len(_payload_rows(payload))
+        if raw_count < PAGE_SIZE:
+            break
+
+    dedup = {}
+    for row in all_rows:
+        key = (row["ID mutation"], row["Date mutation"], row["Valeur foncière (€)"])
+        dedup[key] = row
+    rows = list(dedup.values())
+    rows.sort(key=lambda r: r.get("Date mutation", ""), reverse=True)
+    return rows[: max(1, min(int(size), 200))]
+
+
 def dvf_signal(rows):
-    """Summarise the latest transaction signal without inferring a buyer/seller."""
+    """Résume le signal de mutation sans inférer l'identité de l'acquéreur."""
     if not rows:
         return {
-            "Statut DVF": "Aucune mutation DVF trouvée",
+            "Statut DVF": "Aucune mutation DVF+ trouvée sur la parcelle",
             "Dernière mutation DVF": "",
             "Nature dernière mutation": "",
             "Signal changement propriétaire": "Non démontré",
@@ -167,7 +180,7 @@ def dvf_signal(rows):
         signal = "Mutation ancienne détectée — changement actuel non démontré"
 
     return {
-        "Statut DVF": f"{len(rows)} mutation(s) trouvée(s)",
+        "Statut DVF": f"{len(rows)} mutation(s) trouvée(s) sur la parcelle",
         "Dernière mutation DVF": latest_date,
         "Nature dernière mutation": latest.get("Nature mutation", ""),
         "Signal changement propriétaire": signal,
