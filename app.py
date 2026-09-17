@@ -12,9 +12,9 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.8.1", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.8.1")
-st.caption("Local cible → zone → actifs + fermés → chronologie d'occupation → succession SIRENE → signal de vacance → historique → matching")
+st.set_page_config(page_title="Local Matcher V6.0", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V6.0")
+st.caption("Local cible → zone → actifs + fermés → chronologie → succession SIRENE → opportunités de vacance → matching")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -83,6 +83,67 @@ def add_vacancy_signals(closed_rows, active_rows):
         enriched.append(item)
     return enriched
 
+def build_opportunities(closed_rows):
+    """Create a commercial shortlist from closed establishments.
+
+    Score is a prioritisation signal, not proof of physical vacancy.
+    """
+    from datetime import date
+    out = []
+    today = date.today()
+    for r in closed_rows or []:
+        item = dict(r)
+        score = 0
+        reasons = []
+        if item.get("Signal de vacance", "").startswith("Vacance potentielle"):
+            score += 45; reasons.append("aucun actif SIRENE à l'adresse")
+        elif item.get("Succession SIRENE") == "Oui":
+            score += 10; reasons.append("successeur SIRENE identifié")
+        else:
+            score += 5
+        gap = item.get("Durée intervalle (mois)")
+        try:
+            gap = float(gap)
+        except Exception:
+            gap = None
+        if gap is not None and gap >= 6:
+            score += 20; reasons.append(f"intervalle historique de {gap:g} mois")
+        elif gap is not None and gap > 0:
+            score += 10; reasons.append("intervalle historique détecté")
+        d = _parse_date_safe(item.get("Date fermeture"))
+        if d:
+            age_months = max(0, (today - d).days / 30.4375)
+            if age_months <= 12:
+                score += 20; reasons.append("fermeture récente")
+            elif age_months <= 36:
+                score += 10; reasons.append("fermeture récente à intermédiaire")
+        dist = item.get("Distance (m)")
+        try:
+            dist = float(dist)
+            if dist <= 250: score += 10
+            elif dist <= 500: score += 5
+        except Exception:
+            pass
+        if item.get("Succession SIRENE") == "Oui" or item.get("Occupant actif détecté"):
+            score -= 25
+        score = max(0, min(100, score))
+        if score >= 60: niveau = "🔴 Priorité élevée"
+        elif score >= 35: niveau = "🟠 À qualifier"
+        else: niveau = "🟡 Signal faible"
+        item["Score opportunité"] = score
+        item["Niveau opportunité"] = niveau
+        item["Pourquoi"] = " · ".join(reasons)
+        out.append(item)
+    return sorted(out, key=lambda r: (-int(r.get("Score opportunité", 0)), float(r.get("Distance (m)") or 999999)))
+
+def _parse_date_safe(value):
+    if not value: return None
+    try:
+        from datetime import date
+        return date.fromisoformat(str(value)[:10])
+    except Exception:
+        return None
+
 # --- Geocoding + zone ---
 st.subheader("🗺️ Zone commerciale")
 if st.button("Analyser le local et son environnement", type="primary"):
@@ -126,6 +187,7 @@ if st.button("Analyser le local et son environnement", type="primary"):
                 st.session_state["zone_coord_count"] = sum(1 for r in active_rows if r.get("lat") is not None and r.get("lon") is not None)
                 st.session_state["zone_rows"] = filtered_active
                 st.session_state["zone_closed_rows"] = filtered_closed
+                st.session_state["opportunities"] = build_opportunities(filtered_closed)
                 st.session_state["zone_total_commune"] = len(active_rows)
                 st.session_state["zone_closed_total_commune"] = len(closed_rows)
     except Exception as exc:
@@ -227,6 +289,17 @@ if geo:
             st.dataframe(zone_df.sort_values("Distance (m)")[cols].head(200), use_container_width=True, hide_index=True)
             st.caption("La zone est calculée à partir des coordonnées géographiques diffusées par Sirene et d'une distance à vol d'oiseau. La catégorie commerciale est un regroupement analytique de l'APE ; elle ne remplace pas une vérification terrain. Les statistiques commerciales ci-dessus utilisent uniquement les établissements actifs.")
 
+    # --- Opportunity shortlist ---
+    opportunities = st.session_state.get("opportunities", [])
+    st.markdown("### 🎯 Opportunités de locaux à qualifier")
+    st.caption("Cette shortlist priorise les établissements fermés présentant plusieurs signaux compatibles avec une vacance potentielle. Elle ne constitue pas une preuve de disponibilité du local.")
+    if opportunities:
+        opp_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in opportunities])
+        cols = [c for c in ["Score opportunité", "Niveau opportunité", "Distance (m)", "Enseigne / nom usuel", "Entreprise", "Date fermeture", "Nouvel occupant détecté", "Vacance historique", "Durée intervalle (mois)", "Pourquoi", "Adresse", "APE", "Catégorie commerciale"] if c in opp_df.columns]
+        st.dataframe(opp_df[cols].head(50), use_container_width=True, hide_index=True)
+    else:
+        st.info("Aucune opportunité ne peut encore être priorisée avec les données récupérées.")
+
     # --- Historical layer for vacancy detection ---
     st.markdown("### 🏚️ Anciens établissements dans le rayon")
     st.caption("Cette table contient uniquement les établissements retournés par la requête SIRENE au statut administratif fermé (F).")
@@ -240,7 +313,7 @@ if geo:
         ]
         closed_cols = [c for c in preferred_cols if c in closed_zone_df.columns] + [c for c in closed_zone_df.columns if c not in preferred_cols]
         st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
-        st.caption("V5.8.1 utilise les liens de succession SIRENE dans les deux sens (ancien établissement → successeur et successeur → ancien établissement). Le rapprochement par adresse reste un secours. Un intervalle détecté constitue un signal de vacance historique possible, pas une preuve de vacance physique ni une durée de bail.")
+        st.caption("V6 distingue les signaux de vacance potentielle, les locaux déjà réoccupés et les cas indéterminés. La shortlist est une aide à la prospection, pas une preuve de vacance physique.")
 
         succession_discoveries = st.session_state.get("succession_discoveries", [])
         if succession_discoveries:
@@ -256,7 +329,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V5.7 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
+st.caption("V6 conserve une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
@@ -367,4 +440,4 @@ if st.session_state.get("chosen_sirene"):
 st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_5.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V5.8.1\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V6.0\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
