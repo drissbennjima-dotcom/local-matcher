@@ -5,14 +5,14 @@ from engine.commercial import add_commercial_category, COMMERCIAL_CATEGORIES, CO
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import (
     search_establishments, search_commune_active_closed, flatten_establishments, summarize_history,
-    build_local_history,
+    build_local_history, add_vacancy_signals,
 )
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.4.1", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.4.1")
-st.caption("Local cible → zone → établissements actifs + fermés → historique → détection de locaux potentiellement vacants → matching")
+st.set_page_config(page_title="Local Matcher V5.5", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.5")
+st.caption("Local cible → zone → actifs + fermés → signal de vacance → historique → matching")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -78,6 +78,7 @@ if st.button("Analyser le local et son environnement", type="primary"):
 
                 filtered_active = filter_by_radius(active_rows)
                 filtered_closed = filter_by_radius(closed_rows)
+                filtered_closed = add_vacancy_signals(filtered_closed, filtered_active)
                 st.session_state["zone_coord_count"] = sum(1 for r in active_rows if r.get("lat") is not None and r.get("lon") is not None)
                 st.session_state["zone_rows"] = filtered_active
                 st.session_state["zone_closed_rows"] = filtered_closed
@@ -187,9 +188,14 @@ if geo:
     st.caption("Cette table contient uniquement les établissements retournés par la requête SIRENE au statut administratif fermé (F).")
     if zone_closed_rows:
         closed_zone_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in zone_closed_rows])
-        closed_cols = [c for c in ["Distance (m)", "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Date création", "Adresse", "Code postal", "Commune", "Nb périodes"] if c in closed_zone_df.columns]
+        preferred_cols = [
+            "Distance (m)", "Signal de vacance", "Niveau de signal", "Occupant actif détecté",
+            "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Date création",
+            "Adresse", "Code postal", "Commune", "Nb périodes"
+        ]
+        closed_cols = [c for c in preferred_cols if c in closed_zone_df.columns] + [c for c in closed_zone_df.columns if c not in preferred_cols]
         st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
-        st.caption("V5.4 ajoute une couche historique séparée : les établissements fermés ne sont pas mélangés aux statistiques commerciales actuelles. Un établissement fermé ne signifie pas à lui seul que le local est vacant : la présence d'un successeur ou d'un nouvel occupant devra être vérifiée dans les étapes suivantes.")
+        st.caption("Le signal de vacance compare l'adresse exacte des établissements fermés aux établissements actifs détectés par SIRENE dans le même périmètre. Il ne constitue pas une preuve de vacance physique et doit être confirmé par une source terrain, un successeur identifié ou une autre donnée.")
     else:
         st.info("Aucun établissement fermé géolocalisé n'a été trouvé dans le rayon avec la couverture SIRENE interrogée.")
 else:
@@ -307,7 +313,7 @@ if st.session_state.get("chosen_sirene"):
     export["ancien_siren_sirene"] = c.get("SIREN", "")
     export["ancien_occupant_sirene"] = c.get("Enseigne / nom usuel", "") or c.get("Entreprise", "")
     export["ancien_ape_sirene"] = c.get("APE", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_3.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_5.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V5.3.1\n`Adresse exacte → géocodage → commune → SIRENE géolocalisé → rayon → environnement commercial → historique exact → succession → matching`\n\n### Architecture cible\n`Local → zone → historique → parcelle → propriétaire → prospects → enseignes`")
+st.markdown("### Architecture V5.5\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → signal de vacance → historique → succession → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")

@@ -259,6 +259,50 @@ def flatten_establishments(establishments, forced_status=None):
     return rows
 
 
+
+def address_signature_from_row(row):
+    """Normalized address key for comparing active and closed zone records."""
+    return (
+        _normalize_address_text(row.get("Adresse", "")),
+        _normalize_address_text(row.get("Code postal", "")),
+        _normalize_address_text(row.get("Commune", "")),
+    )
+
+
+def add_vacancy_signals(closed_rows, active_rows):
+    """Add a cautious vacancy signal by comparing exact SIRENE addresses.
+
+    This does not prove physical vacancy. It only distinguishes a closed
+    establishment for which an active establishment is already recorded at the
+    same address from one for which no active SIRENE establishment is detected.
+    """
+    active_by_address = {}
+    for row in active_rows or []:
+        key = address_signature_from_row(row)
+        if all(key):
+            active_by_address.setdefault(key, []).append(row)
+
+    enriched = []
+    for row in closed_rows or []:
+        item = dict(row)
+        key = address_signature_from_row(item)
+        matches = active_by_address.get(key, []) if all(key) else []
+        item["Occupant actif détecté"] = "; ".join(
+            (m.get("Enseigne / nom usuel") or m.get("Entreprise") or m.get("SIRET") or "")
+            for m in matches[:5]
+        )
+        if matches:
+            item["Signal de vacance"] = "Non concluant : actif détecté à la même adresse"
+            item["Niveau de signal"] = "Faible"
+        elif all(key):
+            item["Signal de vacance"] = "Vacance potentielle : aucun actif SIRENE détecté à la même adresse"
+            item["Niveau de signal"] = "À vérifier"
+        else:
+            item["Signal de vacance"] = "Indéterminé : adresse insuffisamment exploitable"
+            item["Niveau de signal"] = "Indéterminé"
+        enriched.append(item)
+    return enriched
+
 def summarize_history(periods):
     out=[]
     for p in periods or []:
