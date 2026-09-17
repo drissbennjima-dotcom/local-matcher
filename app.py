@@ -12,8 +12,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V7", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V7")
+st.set_page_config(page_title="Local Matcher V8", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V8")
 st.caption("Local cible → zone → occupants → reconstitution des locaux → vacance potentielle → matching → propriétaire")
 
 activities = pd.read_csv("data/activites.csv")
@@ -86,7 +86,7 @@ def add_vacancy_signals(closed_rows, active_rows):
 def build_opportunities(closed_rows):
     """Build a conservative shortlist of currently plausible vacancy signals.
 
-    V7 deliberately excludes old closures, unknown dates, and addresses where
+    V8 deliberately excludes old closures, unknown dates, and addresses where
     an active establishment is already detected. The result is a prioritisation
     aid, not proof of physical vacancy.
     """
@@ -276,6 +276,25 @@ def build_local_units(active_rows, closed_rows):
             if starts:
                 interval_months = round((min(starts) - latest_closed_date).days / 30.4375, 1)
 
+        age_months = ""
+        if latest_closed_date:
+            age_months = round(max(0, (date.today() - latest_closed_date).days / 30.4375), 1)
+
+        current_categories = "; ".join(dict.fromkeys(
+            r.get("Catégorie commerciale") for r in active if r.get("Catégorie commerciale")
+        ))
+        historical_categories = "; ".join(dict.fromkeys(
+            r.get("Catégorie commerciale") for r in closed if r.get("Catégorie commerciale")
+        ))
+        if active:
+            qualification = "Occupé — pas de vacance détectée"
+        elif latest_closed_date and age_months <= 36:
+            qualification = "À vérifier sur le terrain"
+        elif latest_closed_date:
+            qualification = "Historique ancien — intérêt actuel non établi"
+        else:
+            qualification = "À qualifier — date insuffisante"
+
         units.append({
             "Distance (m)": sample.get("Distance (m)", ""),
             "Adresse": sample.get("Adresse", ""),
@@ -288,6 +307,10 @@ def build_local_units(active_rows, closed_rows):
             "Nb actifs": len(active),
             "Nb anciens établissements": len(closed),
             "Intervalle historique (mois)": interval_months if interval_months is not None else "",
+            "Âge dernière fermeture (mois)": age_months,
+            "Qualification": qualification,
+            "Catégorie actuelle": current_categories,
+            "Catégorie historique": historical_categories,
             "Lecture": status_detail,
             "Catégorie actuelle": "; ".join(dict.fromkeys((r.get("Catégorie commerciale") or "") for r in active if r.get("Catégorie commerciale"))),
             "Catégorie historique": "; ".join(dict.fromkeys((r.get("Catégorie commerciale") or "") for r in closed if r.get("Catégorie commerciale"))),
@@ -463,18 +486,48 @@ if geo:
             st.dataframe(zone_df.sort_values("Distance (m)")[cols].head(200), use_container_width=True, hide_index=True)
             st.caption("La zone est calculée à partir des coordonnées géographiques diffusées par Sirene et d'une distance à vol d'oiseau. La catégorie commerciale est un regroupement analytique de l'APE ; elle ne remplace pas une vérification terrain. Les statistiques commerciales ci-dessus utilisent uniquement les établissements actifs.")
 
-    # --- Local reconstruction ---
+    # --- Local reconstruction / qualification ---
     local_units = st.session_state.get("local_units", [])
-    st.markdown("### 🏬 Locaux reconstitués dans le rayon")
-    st.caption("V7 regroupe les établissements actifs et fermés par adresse SIRENE pour raisonner en local plutôt qu'en simple liste de SIRET. Une adresse SIRENE n'est pas une parcelle cadastrale ni une unité locative : une vérification terrain reste nécessaire.")
+    st.markdown("### 🏬 Locaux reconstitués et qualification")
+    st.caption("V8 regroupe les établissements par adresse et ajoute une qualification opérationnelle. Une même adresse peut correspondre à plusieurs locaux physiques : cette reconstruction reste indicative.")
     if local_units:
         local_df = pd.DataFrame(local_units)
-        cols = [c for c in ["Statut du local", "Distance (m)", "Adresse", "Occupation actuelle", "Anciens occupants connus", "Dernière fermeture connue", "Nb actifs", "Nb anciens établissements", "Intervalle historique (mois)", "Lecture"] if c in local_df.columns]
-        st.dataframe(local_df[cols], use_container_width=True, hide_index=True)
-        k1, k2, k3 = st.columns(3)
+        f1, f2 = st.columns([1, 2])
+        with f1:
+            qual_filter = st.selectbox(
+                "Filtrer les locaux",
+                ["Tous", "À vérifier sur le terrain", "Occupé — pas de vacance détectée", "Historique ancien — intérêt actuel non établi", "À qualifier — date insuffisante"],
+            )
+        filtered_local_df = local_df if qual_filter == "Tous" else local_df[local_df["Qualification"] == qual_filter]
+        cols = [c for c in ["Qualification", "Statut du local", "Distance (m)", "Adresse", "Occupation actuelle", "Anciens occupants connus", "Dernière fermeture connue", "Âge dernière fermeture (mois)", "Nb actifs", "Nb anciens établissements", "Catégorie actuelle", "Catégorie historique"] if c in filtered_local_df.columns]
+        st.dataframe(filtered_local_df[cols], use_container_width=True, hide_index=True)
+
+        k1, k2, k3, k4 = st.columns(4)
         k1.metric("Locaux / adresses reconstitués", len(local_units))
-        k2.metric("Occupés", sum(1 for r in local_units if r.get("Statut du local") == "🟢 Occupé"))
-        k3.metric("Vacance potentielle récente", sum(1 for r in local_units if r.get("Statut du local") == "🔴 Vacance potentielle récente"))
+        k2.metric("Occupés", sum(1 for r in local_units if r.get("Qualification") == "Occupé — pas de vacance détectée"))
+        k3.metric("À vérifier", sum(1 for r in local_units if r.get("Qualification") == "À vérifier sur le terrain"))
+        k4.metric("Historique ancien", sum(1 for r in local_units if r.get("Qualification") == "Historique ancien — intérêt actuel non établi"))
+
+        candidates = [r for r in local_units if r.get("Qualification") in ("À vérifier sur le terrain", "À qualifier — date insuffisante")]
+        if candidates:
+            labels = [f"{r.get('Adresse','Adresse inconnue')} — {r.get('Qualification','')}" for r in candidates]
+            selected_label = st.selectbox("🔎 Examiner un local à qualifier", labels)
+            selected = candidates[labels.index(selected_label)]
+            st.markdown("#### Fiche du local")
+            a, b, c = st.columns(3)
+            a.metric("Adresse", selected.get("Adresse", "NC"))
+            b.metric("Distance", f"{selected.get('Distance (m)', 'NC')} m")
+            c.metric("Statut", selected.get("Statut du local", "NC"))
+            st.write({
+                "Occupation actuelle": selected.get("Occupation actuelle"),
+                "Anciens occupants": selected.get("Anciens occupants connus"),
+                "Dernière fermeture": selected.get("Dernière fermeture connue"),
+                "Âge de la fermeture (mois)": selected.get("Âge dernière fermeture (mois)"),
+                "Catégorie actuelle": selected.get("Catégorie actuelle"),
+                "Catégorie historique": selected.get("Catégorie historique"),
+                "Lecture": selected.get("Lecture"),
+            })
+            st.info("Étape suivante : confirmer physiquement la vacance et la configuration du local avant toute prospection.")
     else:
         st.info("Aucun local reconstituable dans le rayon avec les données SIRENE récupérées.")
 
@@ -502,7 +555,7 @@ if geo:
         ]
         closed_cols = [c for c in preferred_cols if c in closed_zone_df.columns] + [c for c in closed_zone_df.columns if c not in preferred_cols]
         st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
-        st.caption("V7 distingue les locaux occupés, les signaux de vacance potentielle et les historiques anciens. La shortlist est une aide à la prospection, pas une preuve de vacance physique.")
+        st.caption("V8 distingue les locaux occupés, les locaux à vérifier et l’historique ancien. La qualification est une aide à la prospection, pas une preuve de vacance physique.")
 
         succession_discoveries = st.session_state.get("succession_discoveries", [])
         if succession_discoveries:
@@ -518,7 +571,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V7 conserve une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
+st.caption("V8 conserve une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
@@ -629,4 +682,4 @@ if st.session_state.get("chosen_sirene"):
 st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v7.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V7\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V8\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
