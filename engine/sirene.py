@@ -247,6 +247,12 @@ def flatten_establishments(establishments, forced_status=None):
             addr.get("coordonneeLambertAbscisseEtablissement"),
             addr.get("coordonneeLambertOrdonneeEtablissement")
         )
+        date_debut_actif = current_period.get("dateDebut", "") if raw_status == "A" else ""
+        date_fermeture = ""
+        if raw_status == "F":
+            f_periods = [p for p in periods if p.get("etatAdministratifEtablissement") == "F"]
+            if f_periods:
+                date_fermeture = sorted([p.get("dateDebut", "") for p in f_periods if p.get("dateDebut")], reverse=True)[0]
         rows.append({
             "Statut": status, "SIRET": e.get("siret", ""), "SIREN": e.get("siren", ""),
             "Enseigne / nom usuel": enseigne, "Entreprise": ul.get("denominationUniteLegale") or "",
@@ -254,6 +260,7 @@ def flatten_establishments(establishments, forced_status=None):
             "Date création": e.get("dateCreationEtablissement", ""),
             "Adresse": " ".join([str(x) for x in [addr.get("numeroVoieEtablissement"), addr.get("typeVoieEtablissement"), addr.get("libelleVoieEtablissement")] if x]),
             "Code postal": addr.get("codePostalEtablissement", ""), "Commune": addr.get("libelleCommuneEtablissement", ""),
+            "Date début actif": date_debut_actif, "Date fermeture": date_fermeture,
             "Nb périodes": len(periods), "Historique périodes": periods, "lat": lat, "lon": lon,
         })
     return rows
@@ -302,6 +309,71 @@ def add_vacancy_signals(closed_rows, active_rows):
             item["Niveau de signal"] = "Indéterminé"
         enriched.append(item)
     return enriched
+
+def _parse_iso_date(value):
+    if not value:
+        return None
+    try:
+        from datetime import date
+        return date.fromisoformat(str(value)[:10])
+    except Exception:
+        return None
+
+
+def add_occupation_chronology(closed_rows, active_rows):
+    """Reconstruct a cautious occupancy chronology from closed/active SIRENE rows.
+
+    The goal is to distinguish current occupancy from a possible historical gap.
+    This is an analytical signal, not proof of physical vacancy or lease duration.
+    """
+    active_by_address = {}
+    for row in active_rows or []:
+        key = address_signature_from_row(row)
+        if all(key):
+            start = _parse_iso_date(row.get("Date début actif") or row.get("Date création"))
+            active_by_address.setdefault(key, []).append((start, row))
+
+    enriched = []
+    for row in closed_rows or []:
+        item = dict(row)
+        key = address_signature_from_row(item)
+        closure = _parse_iso_date(item.get("Date fermeture"))
+        candidates = sorted(active_by_address.get(key, []), key=lambda x: (x[0] is None, x[0] or _parse_iso_date("9999-12-31"))) if all(key) else []
+
+        later = [(d, r) for d, r in candidates if d and closure and d > closure]
+        prior_or_same = [(d, r) for d, r in candidates if not (d and closure and d > closure)]
+
+        item["Nouvel occupant détecté"] = ""
+        item["Début nouvel occupant"] = ""
+        item["Durée intervalle (mois)"] = ""
+        item["Vacance historique"] = "Indéterminée"
+        item["Chronologie"] = ""
+
+        if closure and later:
+            start, occupant = later[0]
+            months = round((start - closure).days / 30.4375, 1)
+            name = occupant.get("Enseigne / nom usuel") or occupant.get("Entreprise") or occupant.get("SIRET") or "Occupant actif"
+            item["Nouvel occupant détecté"] = name
+            item["Début nouvel occupant"] = start.isoformat()
+            item["Durée intervalle (mois)"] = months
+            item["Vacance historique"] = "Possible : intervalle détecté"
+            item["Chronologie"] = f"Fermeture {closure.isoformat()} → nouvel occupant {start.isoformat()}"
+        elif closure and prior_or_same:
+            names = []
+            for _d, occupant in prior_or_same[:5]:
+                names.append(occupant.get("Enseigne / nom usuel") or occupant.get("Entreprise") or occupant.get("SIRET") or "Occupant actif")
+            item["Nouvel occupant détecté"] = "; ".join(dict.fromkeys(names))
+            item["Vacance historique"] = "Non démontrée : actif déjà présent à l'adresse"
+            item["Chronologie"] = f"Fermeture {closure.isoformat()} + activité active déjà détectée"
+        elif closure:
+            item["Vacance historique"] = "À vérifier : aucun actif postérieur détecté"
+            item["Chronologie"] = f"Fermeture {closure.isoformat()} → aucun actif postérieur détecté"
+        else:
+            item["Vacance historique"] = "Indéterminée : date de fermeture indisponible"
+            item["Chronologie"] = "Date de fermeture indisponible"
+        enriched.append(item)
+    return enriched
+
 
 def summarize_history(periods):
     out=[]

@@ -7,14 +7,14 @@ from engine.commercial import add_commercial_category, COMMERCIAL_CATEGORIES, CO
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import (
     search_establishments, search_commune_active_closed, flatten_establishments, summarize_history,
-    build_local_history,
+    build_local_history, add_occupation_chronology,
 )
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.5", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.5")
-st.caption("Local cible → zone → actifs + fermés → signal de vacance → historique → matching")
+st.set_page_config(page_title="Local Matcher V5.6", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.6")
+st.caption("Local cible → zone → actifs + fermés → chronologie d'occupation → signal de vacance → historique → matching")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -117,6 +117,7 @@ if st.button("Analyser le local et son environnement", type="primary"):
                 filtered_active = filter_by_radius(active_rows)
                 filtered_closed = filter_by_radius(closed_rows)
                 filtered_closed = add_vacancy_signals(filtered_closed, filtered_active)
+                filtered_closed = add_occupation_chronology(filtered_closed, filtered_active)
                 st.session_state["zone_coord_count"] = sum(1 for r in active_rows if r.get("lat") is not None and r.get("lon") is not None)
                 st.session_state["zone_rows"] = filtered_active
                 st.session_state["zone_closed_rows"] = filtered_closed
@@ -227,13 +228,14 @@ if geo:
     if zone_closed_rows:
         closed_zone_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in zone_closed_rows])
         preferred_cols = [
-            "Distance (m)", "Signal de vacance", "Niveau de signal", "Occupant actif détecté",
-            "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Date création",
-            "Adresse", "Code postal", "Commune", "Nb périodes"
+            "Distance (m)", "Signal de vacance", "Niveau de signal", "Vacance historique",
+            "Date fermeture", "Nouvel occupant détecté", "Début nouvel occupant", "Durée intervalle (mois)",
+            "Chronologie", "Occupant actif détecté", "Statut", "SIRET", "Enseigne / nom usuel",
+            "Entreprise", "APE", "Date création", "Adresse", "Code postal", "Commune", "Nb périodes"
         ]
         closed_cols = [c for c in preferred_cols if c in closed_zone_df.columns] + [c for c in closed_zone_df.columns if c not in preferred_cols]
         st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
-        st.caption("Le signal de vacance compare l'adresse exacte des établissements fermés aux établissements actifs détectés par SIRENE dans le même périmètre. Il ne constitue pas une preuve de vacance physique et doit être confirmé par une source terrain, un successeur identifié ou une autre donnée.")
+        st.caption("V5.6 ajoute une chronologie prudente : fermeture d'un établissement → recherche d'un actif postérieur à la même adresse. Un intervalle détecté constitue un signal de vacance historique possible, pas une preuve de vacance physique ni une durée de bail.")
     else:
         st.info("Aucun établissement fermé géolocalisé n'a été trouvé dans le rayon avec la couverture SIRENE interrogée.")
 else:
@@ -243,7 +245,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V5.4.1 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
+st.caption("V5.6 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
@@ -354,4 +356,4 @@ if st.session_state.get("chosen_sirene"):
 st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_5.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V5.5\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → signal de vacance → historique → succession → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V5.6\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie d’occupation → signal de vacance → historique → succession → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
