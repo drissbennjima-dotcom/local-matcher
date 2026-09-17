@@ -15,8 +15,8 @@ from engine.owner import search_moral_owners
 from engine.dvf import search_dvf_by_parcel, dvf_signal
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V10.1", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V10.1")
+st.set_page_config(page_title="Local Matcher V10.2", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V10.2")
 st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → détenteur de droits → DVF")
 
 activities = pd.read_csv("data/activites.csv")
@@ -439,7 +439,7 @@ if geo:
         else:
             st.info("Aucune personne morale retrouvée sur cette parcelle dans la base interrogée. Un propriétaire particulier peut notamment ne pas apparaître dans cette donnée.")
 
-        # --- V10.1 : signal de mutation DVF ---
+        # --- V10.2 : signal de mutation DVF ---
         st.markdown("### 💶 Transactions foncières DVF sur la parcelle")
         try:
             dvf_rows = search_dvf_by_parcel(parcel.get("Parcelle cadastrale"))
@@ -460,7 +460,7 @@ if geo:
             st.info(f"**{sig['Statut DVF']}** · Dernière mutation : **{sig['Dernière mutation DVF'] or 'NC'}** · {sig['Signal changement propriétaire']}")
             st.caption("DVF recense les transactions immobilières, mais ne fournit pas le nom de l'acheteur ou du vendeur. Une mutation est donc un signal de changement de propriétaire potentiel, pas une identification du nouveau propriétaire.")
         elif st.session_state.get("dvf_error"):
-            st.warning(f"Recherche DVF indisponible : {st.session_state['dvf_error']}")
+            st.warning(f"Données DVF temporairement indisponibles : {st.session_state['dvf_error']}")
         else:
             st.info("Aucune mutation DVF retrouvée sur cette parcelle dans la période couverte par la base interrogée.")
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -767,7 +767,7 @@ if dvf_rows:
     export["derniere_mutation_dvf"] = sig.get("Dernière mutation DVF", "")
     export["nature_derniere_mutation_dvf"] = sig.get("Nature dernière mutation", "")
     export["signal_changement_proprietaire_dvf"] = sig.get("Signal changement propriétaire", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_1.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_2.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V10.1\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")
+st.markdown("### Architecture V10.2\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")

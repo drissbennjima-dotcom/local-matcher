@@ -1,8 +1,17 @@
-import requests
+import time
 from datetime import date
 
-BASE_URL = "https://api.cquest.org/dvf"
-TIMEOUT = 20
+import requests
+
+# Micro-API DVF (preuve de concept publique).
+# La disponibilité n'est pas garantie : on ajoute donc des retries et un fallback
+# par section cadastrale avant de considérer le service indisponible.
+BASE_URLS = [
+    "https://api.cquest.org/dvf",
+    "http://api.cquest.org/dvf",
+]
+TIMEOUT = 15
+RETRIES = 2
 
 
 def _clean(value):
@@ -11,34 +20,47 @@ def _clean(value):
     return str(value).strip()
 
 
-def search_dvf_by_parcel(parcel_code: str, size: int = 50):
-    """Return DVF transactions linked to one cadastral parcel.
+def _request(params):
+    last_error = None
+    for base_url in BASE_URLS:
+        for attempt in range(RETRIES + 1):
+            try:
+                r = requests.get(
+                    base_url,
+                    params=params,
+                    timeout=TIMEOUT,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": "Local-Matcher/10.2",
+                    },
+                )
+                if r.status_code == 200:
+                    try:
+                        return r.json()
+                    except ValueError as exc:
+                        last_error = RuntimeError("Réponse DVF illisible")
+                        if attempt < RETRIES:
+                            time.sleep(0.8 * (attempt + 1))
+                            continue
+                        raise last_error from exc
 
-    Source: public micro-API exposing DVF data. Availability is not guaranteed.
-    DVF identifies transactions but does not publish buyer/seller names.
-    """
-    code = _clean(parcel_code).upper()
-    if not code:
-        return []
+                last_error = RuntimeError(f"HTTP {r.status_code}")
+                # 5xx = service temporairement indisponible : on retente.
+                if r.status_code >= 500 and attempt < RETRIES:
+                    time.sleep(0.8 * (attempt + 1))
+                    continue
+                break
+            except requests.RequestException as exc:
+                last_error = RuntimeError(f"connexion impossible : {exc}")
+                if attempt < RETRIES:
+                    time.sleep(0.8 * (attempt + 1))
+                    continue
+                break
 
-    try:
-        r = requests.get(
-            BASE_URL,
-            params={"numero_plan": code},
-            timeout=TIMEOUT,
-            headers={"Accept": "application/json", "User-Agent": "Local-Matcher/10.1"},
-        )
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Service DVF indisponible : {exc}") from exc
+    raise RuntimeError(f"Service DVF temporairement indisponible ({last_error or 'erreur inconnue'})")
 
-    if r.status_code != 200:
-        raise RuntimeError(f"Service DVF : HTTP {r.status_code}")
 
-    try:
-        payload = r.json()
-    except ValueError as exc:
-        raise RuntimeError("Réponse DVF illisible") from exc
-
+def _rows_from_payload(payload, size=200):
     rows = payload.get("resultats", []) or payload.get("features", []) or []
     if isinstance(rows, dict):
         rows = [rows]
@@ -78,9 +100,48 @@ def search_dvf_by_parcel(parcel_code: str, size: int = 50):
             ),
             "Commune": _clean(props.get("nom_commune")),
         })
-
     out.sort(key=lambda x: x.get("Date mutation", ""), reverse=True)
     return out
+
+
+def search_dvf_by_parcel(parcel_code: str, size: int = 50):
+    """Return DVF transactions linked to a cadastral parcel.
+
+    Primary query: exact parcel. Fallback: cadastral section, then filter
+    returned rows back to the requested parcel. Buyer/seller identities are
+    not inferred from DVF open data.
+    """
+    code = _clean(parcel_code).upper()
+    if not code:
+        return []
+
+    # Format attendu : code INSEE (5) + section (4) + parcelle (4).
+    # Exemple Mondeville : 14437 + CE + 0138 => 14437000CE0138.
+    code_commune = code[:5] if len(code) >= 5 else ""
+    section = code[5:9] if len(code) >= 9 else ""
+
+    try:
+        payload = _request({"numero_plan": code})
+        rows = _rows_from_payload(payload, size)
+        if rows:
+            return rows
+    except RuntimeError as primary_error:
+        # Fallback par section : utile si l'API refuse ponctuellement le
+        # filtre parcelle mais reste capable de répondre sur la section.
+        if code_commune and section:
+            try:
+                payload = _request({"section": f"{code_commune}{section}"})
+                rows = _rows_from_payload(payload, 200)
+                filtered = [r for r in rows if _clean(r.get("Parcelle")).upper() == code]
+                return filtered[: max(1, min(int(size), 200))]
+            except RuntimeError as fallback_error:
+                raise RuntimeError(
+                    "DVF temporairement indisponible après nouvelle tentative "
+                    f"et fallback cadastral ({fallback_error})"
+                ) from primary_error
+        raise
+
+    return []
 
 
 def dvf_signal(rows):
