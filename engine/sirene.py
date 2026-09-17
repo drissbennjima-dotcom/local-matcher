@@ -229,7 +229,7 @@ def _lambert_to_wgs84(x, y):
         return None, None
 
 
-def flatten_establishments(establishments):
+def flatten_establishments(establishments, forced_status=None):
     rows = []
     for e in establishments:
         addr = e.get("adresseEtablissement") or {}
@@ -238,7 +238,11 @@ def flatten_establishments(establishments):
         current_period = periods[0] if periods else {}
         enseignes = [current_period.get("enseigne1Etablissement"), current_period.get("enseigne2Etablissement"), current_period.get("enseigne3Etablissement"), current_period.get("denominationUsuelleEtablissement")]
         enseigne = " / ".join([x for x in enseignes if x])
-        status = "Fermé" if e.get("etatAdministratifEtablissement") == "F" else "Actif"
+        # The status can be represented in the current historized period rather
+        # than at the establishment root. For zone layers, forced_status is used
+        # because active and closed records are queried separately.
+        raw_status = forced_status or current_period.get("etatAdministratifEtablissement") or e.get("etatAdministratifEtablissement")
+        status = "Fermé" if raw_status == "F" else "Actif"
         lat, lon = _lambert_to_wgs84(
             addr.get("coordonneeLambertAbscisseEtablissement"),
             addr.get("coordonneeLambertOrdonneeEtablissement")

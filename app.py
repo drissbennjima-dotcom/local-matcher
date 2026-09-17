@@ -10,8 +10,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.4.0", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.4.0")
+st.set_page_config(page_title="Local Matcher V5.4.1", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.4.1")
 st.caption("Local cible → zone → établissements actifs + fermés → historique → détection de locaux potentiellement vacants → matching")
 
 activities = pd.read_csv("data/activites.csv")
@@ -62,8 +62,8 @@ if st.button("Analyser le local et son environnement", type="primary"):
                 raise RuntimeError("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
             with st.spinner("Recherche SIRENE des établissements actifs et fermés de la commune puis filtrage par rayon…"):
                 raw_all, raw_active, raw_closed = search_commune_active_closed(api_key, geo["citycode"], max_pages=max_pages)
-                active_rows = add_commercial_category(flatten_establishments(raw_active))
-                closed_rows = add_commercial_category(flatten_establishments(raw_closed))
+                active_rows = add_commercial_category(flatten_establishments(raw_active, forced_status="A"))
+                closed_rows = add_commercial_category(flatten_establishments(raw_closed, forced_status="F"))
 
                 def filter_by_radius(items):
                     filtered_items = []
@@ -184,6 +184,7 @@ if geo:
 
     # --- Historical layer for vacancy detection ---
     st.markdown("### 🏚️ Anciens établissements dans le rayon")
+    st.caption("Cette table contient uniquement les établissements retournés par la requête SIRENE au statut administratif fermé (F).")
     if zone_closed_rows:
         closed_zone_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in zone_closed_rows])
         closed_cols = [c for c in ["Distance (m)", "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Date création", "Adresse", "Code postal", "Commune", "Nb périodes"] if c in closed_zone_df.columns]
@@ -198,7 +199,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V5.3.2 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
+st.caption("V5.4.1 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
