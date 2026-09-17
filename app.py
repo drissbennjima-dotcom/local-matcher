@@ -4,15 +4,15 @@ import pandas as pd
 from engine.commercial import add_commercial_category, COMMERCIAL_CATEGORIES, COMMERCIAL_DETAIL_CATEGORIES
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import (
-    search_establishments, search_commune_active, flatten_establishments, summarize_history,
+    search_establishments, search_commune_active_closed, flatten_establishments, summarize_history,
     build_local_history,
 )
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.3.2", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.3.2")
-st.caption("Local cible → géolocalisation → zone commerciale → SIRENE → historique du local → matching")
+st.set_page_config(page_title="Local Matcher V5.4.0", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.4.0")
+st.caption("Local cible → zone → établissements actifs + fermés → historique → détection de locaux potentiellement vacants → matching")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -26,7 +26,7 @@ with st.sidebar:
 
     st.header("🏪 Analyse commerciale")
     use_zone = st.checkbox("Analyser les établissements dans le rayon", value=True)
-    max_pages = st.slider("Pages SIRENE maximum", 1, 20, 10, help="Une page SIRENE contient jusqu'à 1 000 établissements. Plus de pages = plus de couverture mais plus d'appels API.")
+    max_pages = st.slider("Pages SIRENE maximum (par statut)", 1, 20, 10, help="Une page SIRENE contient jusqu'à 1 000 établissements. V5.4 interroge séparément les actifs et les fermés : plus de pages = plus de couverture mais plus d'appels API.")
 
     st.header("🏢 Ancien occupant")
     use_sirene = st.checkbox("Rechercher l'historique à l'adresse", value=True)
@@ -53,43 +53,54 @@ if st.button("Analyser le local et son environnement", type="primary"):
             geo = geocode_address(address)
         st.session_state["geo"] = geo
         st.session_state["zone_rows"] = []
+        st.session_state["zone_closed_rows"] = []
         st.session_state["zone_error"] = ""
         st.success(f"Adresse géolocalisée : {geo['label']}")
 
         if use_zone:
             if not api_key:
                 raise RuntimeError("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
-            with st.spinner("Recherche SIRENE des établissements de la commune puis filtrage par rayon…"):
-                raw_zone = search_commune_active(api_key, geo["citycode"], max_pages=max_pages)
-                zone_rows = flatten_establishments(raw_zone)
-                zone_rows = add_commercial_category(zone_rows)
-                st.session_state["zone_coord_count"] = sum(1 for r in zone_rows if r.get("lat") is not None and r.get("lon") is not None)
-                filtered = []
-                for r in zone_rows:
-                    if r.get("lat") is None or r.get("lon") is None:
-                        continue
-                    d = haversine_m(geo["lat"], geo["lon"], r["lat"], r["lon"])
-                    if d <= radius:
-                        r["Distance (m)"] = round(d)
-                        filtered.append(r)
-                st.session_state["zone_rows"] = filtered
-                st.session_state["zone_total_commune"] = len(zone_rows)
+            with st.spinner("Recherche SIRENE des établissements actifs et fermés de la commune puis filtrage par rayon…"):
+                raw_all, raw_active, raw_closed = search_commune_active_closed(api_key, geo["citycode"], max_pages=max_pages)
+                active_rows = add_commercial_category(flatten_establishments(raw_active))
+                closed_rows = add_commercial_category(flatten_establishments(raw_closed))
+
+                def filter_by_radius(items):
+                    filtered_items = []
+                    for r in items:
+                        if r.get("lat") is None or r.get("lon") is None:
+                            continue
+                        d = haversine_m(geo["lat"], geo["lon"], r["lat"], r["lon"])
+                        if d <= radius:
+                            r["Distance (m)"] = round(d)
+                            filtered_items.append(r)
+                    return filtered_items
+
+                filtered_active = filter_by_radius(active_rows)
+                filtered_closed = filter_by_radius(closed_rows)
+                st.session_state["zone_coord_count"] = sum(1 for r in active_rows if r.get("lat") is not None and r.get("lon") is not None)
+                st.session_state["zone_rows"] = filtered_active
+                st.session_state["zone_closed_rows"] = filtered_closed
+                st.session_state["zone_total_commune"] = len(active_rows)
+                st.session_state["zone_closed_total_commune"] = len(closed_rows)
     except Exception as exc:
         st.session_state["zone_error"] = str(exc)
         st.error(str(exc))
 
 geo = st.session_state.get("geo")
 zone_rows = st.session_state.get("zone_rows", [])
+zone_closed_rows = st.session_state.get("zone_closed_rows", [])
 if geo:
     st.markdown(f"**Centre :** {geo['label']} · **Rayon :** {radius} m")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Établissements dans le rayon", len(zone_rows))
-    c2.metric("Commune interrogée", geo.get("city", "NC"))
-    c3.metric("Coordonnées", f"{geo['lat']:.5f}, {geo['lon']:.5f}")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Actifs dans le rayon", len(zone_rows))
+    c2.metric("Fermés dans le rayon", len(zone_closed_rows))
+    c3.metric("Commune interrogée", geo.get("city", "NC"))
+    c4.metric("Coordonnées", f"{geo['lat']:.5f}, {geo['lon']:.5f}")
     commune_total = st.session_state.get("zone_total_commune", 0)
     coord_total = st.session_state.get("zone_coord_count", 0)
     coverage = (coord_total / commune_total * 100) if commune_total else 0
-    c4.metric("Couverture géographique", f"{coverage:.0f}%")
+    c5.metric("Couverture actifs", f"{coverage:.0f}%")
 
     if zone_rows:
         # Carte allégée : petits points pour éviter le nuage rouge illisible.
@@ -169,9 +180,19 @@ if geo:
             st.markdown("### 🏪 Établissements proches")
             cols = [c for c in ["Distance (m)", "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Catégorie commerciale", "Sous-catégorie commerciale", "Adresse"] if c in zone_df.columns]
             st.dataframe(zone_df.sort_values("Distance (m)")[cols].head(200), use_container_width=True, hide_index=True)
-            st.caption("La zone est calculée à partir des coordonnées géographiques diffusées par Sirene et d'une distance à vol d'oiseau. La catégorie commerciale est un regroupement analytique de l'APE ; elle ne remplace pas une vérification terrain.")
+            st.caption("La zone est calculée à partir des coordonnées géographiques diffusées par Sirene et d'une distance à vol d'oiseau. La catégorie commerciale est un regroupement analytique de l'APE ; elle ne remplace pas une vérification terrain. Les statistiques commerciales ci-dessus utilisent uniquement les établissements actifs.")
+
+    # --- Historical layer for vacancy detection ---
+    st.markdown("### 🏚️ Anciens établissements dans le rayon")
+    if zone_closed_rows:
+        closed_zone_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in zone_closed_rows])
+        closed_cols = [c for c in ["Distance (m)", "Statut", "SIRET", "Enseigne / nom usuel", "Entreprise", "APE", "Date création", "Adresse", "Code postal", "Commune", "Nb périodes"] if c in closed_zone_df.columns]
+        st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
+        st.caption("V5.4 ajoute une couche historique séparée : les établissements fermés ne sont pas mélangés aux statistiques commerciales actuelles. Un établissement fermé ne signifie pas à lui seul que le local est vacant : la présence d'un successeur ou d'un nouvel occupant devra être vérifiée dans les étapes suivantes.")
     else:
-        st.warning("Aucun établissement géolocalisé n'a été trouvé dans ce rayon. Essayez un rayon supérieur.")
+        st.info("Aucun établissement fermé géolocalisé n'a été trouvé dans le rayon avec la couverture SIRENE interrogée.")
+else:
+    st.warning("Aucun établissement géolocalisé actif n'a été trouvé dans ce rayon. Essayez un rayon supérieur.")
 
 st.divider()
 

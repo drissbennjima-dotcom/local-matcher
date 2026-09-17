@@ -160,14 +160,16 @@ def search_establishments(api_key: str, address: str, include_closed=True, max_r
     return list(all_results.values()), f"{scope_note} | " + " | ".join(used)
 
 
-def search_commune_active(api_key: str, citycode: str, max_pages=20):
-    """Load active establishments in a commune using Sirene cursor pagination."""
+def _search_commune_status(api_key: str, citycode: str, status: str, max_pages=20):
+    """Load establishments of one administrative status in a commune."""
     if not api_key:
         raise ValueError("Clé SIRENE absente.")
     if not citycode:
         raise ValueError("Code commune absent.")
+    if status not in {"A", "F"}:
+        raise ValueError("Statut SIRENE invalide.")
 
-    q = f"codeCommuneEtablissement:{citycode} AND periode(etatAdministratifEtablissement:A)"
+    q = f"codeCommuneEtablissement:{citycode} AND periode(etatAdministratifEtablissement:{status})"
     results = []
     cursor = "*"
     for _ in range(max_pages):
@@ -179,6 +181,28 @@ def search_commune_active(api_key: str, citycode: str, max_pages=20):
             break
         cursor = next_cursor
     return results
+
+
+def search_commune_active(api_key: str, citycode: str, max_pages=20):
+    """Load active establishments in a commune using Sirene cursor pagination."""
+    return _search_commune_status(api_key, citycode, "A", max_pages=max_pages)
+
+
+def search_commune_active_closed(api_key: str, citycode: str, max_pages=20):
+    """Load active and closed establishments in a commune.
+
+    Active and closed records are queried separately so the zone's current
+    commercial analysis can remain based on active establishments while a
+    separate historical layer can identify former occupants.
+    """
+    active = _search_commune_status(api_key, citycode, "A", max_pages=max_pages)
+    closed = _search_commune_status(api_key, citycode, "F", max_pages=max_pages)
+    by_siret = {}
+    for item in active + closed:
+        siret = item.get("siret")
+        if siret:
+            by_siret[siret] = item
+    return list(by_siret.values()), active, closed
 
 
 def _lambert_to_wgs84(x, y):
