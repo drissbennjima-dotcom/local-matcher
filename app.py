@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
+import re
+import unicodedata
 
 from engine.commercial import add_commercial_category, COMMERCIAL_CATEGORIES, COMMERCIAL_DETAIL_CATEGORIES
 from engine.matching import score_activities, get_activity_profile, match_brands
 from engine.sirene import (
     search_establishments, search_commune_active_closed, flatten_establishments, summarize_history,
-    build_local_history, add_vacancy_signals,
+    build_local_history,
 )
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
@@ -44,6 +46,42 @@ with st.sidebar:
     owner_siren = st.text_input("SIREN propriétaire (si connu)")
 
 api_key = st.secrets.get("SIRENE_API_KEY") if hasattr(st, "secrets") else None
+
+def _norm_address(value):
+    value = (value or "").strip().upper()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r"[^A-Z0-9 ]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+def add_vacancy_signals(closed_rows, active_rows):
+    """Compare closed and active establishments by normalized exact address."""
+    active_by_address = {}
+    for row in active_rows or []:
+        key = (_norm_address(row.get("Adresse")), _norm_address(row.get("Code postal")), _norm_address(row.get("Commune")))
+        if all(key):
+            active_by_address.setdefault(key, []).append(row)
+
+    enriched = []
+    for row in closed_rows or []:
+        item = dict(row)
+        key = (_norm_address(row.get("Adresse")), _norm_address(row.get("Code postal")), _norm_address(row.get("Commune")))
+        matches = active_by_address.get(key, []) if all(key) else []
+        item["Occupant actif détecté"] = "; ".join(
+            (m.get("Enseigne / nom usuel") or m.get("Entreprise") or m.get("SIRET") or "")
+            for m in matches[:5]
+        )
+        if matches:
+            item["Signal de vacance"] = "Non concluant : actif détecté à la même adresse"
+            item["Niveau de signal"] = "Faible"
+        elif all(key):
+            item["Signal de vacance"] = "Vacance potentielle : aucun actif SIRENE détecté à la même adresse"
+            item["Niveau de signal"] = "À vérifier"
+        else:
+            item["Signal de vacance"] = "Indéterminé : adresse insuffisamment exploitable"
+            item["Niveau de signal"] = "Indéterminé"
+        enriched.append(item)
+    return enriched
 
 # --- Geocoding + zone ---
 st.subheader("🗺️ Zone commerciale")
