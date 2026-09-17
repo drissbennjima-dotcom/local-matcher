@@ -11,11 +11,12 @@ from engine.sirene import (
 )
 from engine.geocoding import geocode_address
 from engine.geocadastre import best_parcel
+from engine.owner import search_moral_owners
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V9", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V9")
-st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → propriétaire")
+st.set_page_config(page_title="Local Matcher V10", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V10")
+st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → propriétaire personne morale")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -416,6 +417,26 @@ if geo:
         st.caption("Source : Géoplateforme / Parcellaire Express (PCI). Cette correspondance rattache le point géocodé à une parcelle ; elle ne constitue pas une preuve de propriété.")
     elif st.session_state.get("parcel_error"):
         st.warning(f"Rattachement cadastral indisponible : {st.session_state['parcel_error']}")
+
+    # --- V10 : propriétaire personne morale ---
+    if parcel.get("Parcelle cadastrale"):
+        st.markdown("### 🏢 Propriétaire personne morale détecté")
+        try:
+            owners_found = search_moral_owners(parcel.get("Parcelle cadastrale"))
+            st.session_state["owners_found"] = owners_found
+        except Exception as exc:
+            st.session_state["owners_found"] = []
+            st.session_state["owner_error"] = str(exc)
+        owners_found = st.session_state.get("owners_found", [])
+        if owners_found:
+            odf = pd.DataFrame(owners_found)
+            st.dataframe(odf, use_container_width=True, hide_index=True)
+            st.success(f"{len(owners_found)} détenteur(s) de droits personne morale retrouvé(s) sur cette parcelle.")
+            st.caption("Source : données MAJIC / personnes morales diffusées par Koumoul à partir des données DGFiP. Le millésime est daté et la donnée ne garantit pas la situation de propriété au jour du test.")
+        elif st.session_state.get("owner_error"):
+            st.warning(f"Recherche propriétaire indisponible : {st.session_state['owner_error']}")
+        else:
+            st.info("Aucune personne morale retrouvée sur cette parcelle dans la base interrogée. Un propriétaire particulier peut notamment ne pas apparaître dans cette donnée.")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Actifs dans le rayon", len(zone_rows))
     c2.metric("Fermés dans le rayon", len(zone_closed_rows))
@@ -678,12 +699,16 @@ br["score"] = br["score"].round().astype(int).astype(str) + "%"
 st.dataframe(br[["brand","category","surface_min","surface_max","presence","score","reason"]], use_container_width=True, hide_index=True)
 
 st.subheader("🏢 Propriétaire")
-if owner_name or owner_siren:
+auto_owners = st.session_state.get("owners_found", [])
+if auto_owners:
+    first_owner = auto_owners[0]
+    st.success(f"{first_owner.get('Dénomination') or 'Dénomination non renseignée'} — SIREN : {first_owner.get('SIREN') or 'non renseigné'} — droit : {first_owner.get('Code droit') or 'NC'}")
+elif owner_name or owner_siren:
     st.success(f"{owner_name or 'Nom non renseigné'} — SIREN : {owner_siren or 'non renseigné'}")
 else:
-    st.warning("Aucun propriétaire renseigné. Cette brique sera connectée ensuite aux données foncières personnes morales.")
-st.link_button("Rechercher un propriétaire personne morale avec TOISE", "https://toiseai.com/")
-st.caption("Les données foncières personnes morales sont millésimées ; elles ne garantissent pas la propriété au jour du test.")
+    st.warning("Aucun propriétaire personne morale détecté automatiquement.")
+st.link_button("Vérifier avec TOISE", "https://toiseai.com/")
+st.caption("Les données foncières personnes morales sont millésimées ; elles ne garantissent pas la propriété au jour du test. Les particuliers ne figurent pas dans cette donnée ouverte.")
 
 st.subheader("⬇️ Export")
 export = br.copy()
@@ -703,7 +728,12 @@ parcel = st.session_state.get("parcel", {})
 export["parcelle_cadastrale"] = parcel.get("Parcelle cadastrale", "")
 export["section_cadastrale"] = parcel.get("Section", "")
 export["numero_parcelle"] = parcel.get("Numéro parcelle", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v9.csv", "text/csv")
+if auto_owners:
+    export["proprietaire_auto"] = auto_owners[0].get("Dénomination", "")
+    export["siren_proprietaire_auto"] = auto_owners[0].get("SIREN", "")
+    export["forme_juridique_proprietaire"] = auto_owners[0].get("Forme juridique", "")
+    export["droit_proprietaire"] = auto_owners[0].get("Code droit", "")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10.csv", "text/csv")
 
 st.divider()
 st.markdown("### Architecture V9\n`Adresse → Géoplateforme/BAN → parcelle → commune → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
