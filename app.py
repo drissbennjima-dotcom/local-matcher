@@ -12,9 +12,9 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.8", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.8")
-st.caption("Local cible → zone → actifs + fermés → chronologie d'occupation → signal de vacance → historique → matching")
+st.set_page_config(page_title="Local Matcher V5.8.1", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.8.1")
+st.caption("Local cible → zone → actifs + fermés → chronologie d'occupation → succession SIRENE → signal de vacance → historique → matching")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -93,6 +93,7 @@ if st.button("Analyser le local et son environnement", type="primary"):
         st.session_state["zone_rows"] = []
         st.session_state["zone_closed_rows"] = []
         st.session_state["zone_error"] = ""
+        st.session_state["succession_discoveries"] = []
         st.success(f"Adresse géolocalisée : {geo['label']}")
 
         if use_zone:
@@ -118,7 +119,10 @@ if st.button("Analyser le local et son environnement", type="primary"):
                 filtered_closed = filter_by_radius(closed_rows)
                 filtered_closed = add_vacancy_signals(filtered_closed, filtered_active)
                 filtered_closed = add_occupation_chronology(filtered_closed, filtered_active)
-                filtered_closed = add_succession_links_to_chronology(api_key, filtered_closed, filtered_active, max_checks=min(len(filtered_closed), 15))
+                filtered_closed, succession_discoveries = add_succession_links_to_chronology(
+                    api_key, filtered_closed, filtered_active, max_checks=8
+                )
+                st.session_state["succession_discoveries"] = succession_discoveries
                 st.session_state["zone_coord_count"] = sum(1 for r in active_rows if r.get("lat") is not None and r.get("lon") is not None)
                 st.session_state["zone_rows"] = filtered_active
                 st.session_state["zone_closed_rows"] = filtered_closed
@@ -236,7 +240,13 @@ if geo:
         ]
         closed_cols = [c for c in preferred_cols if c in closed_zone_df.columns] + [c for c in closed_zone_df.columns if c not in preferred_cols]
         st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
-        st.caption("V5.7 privilégie les liens de succession SIRENE lorsqu’ils sont disponibles et conserve le rapprochement par adresse comme solution de secours : fermeture d'un établissement → recherche d'un actif postérieur à la même adresse. Un intervalle détecté constitue un signal de vacance historique possible, pas une preuve de vacance physique ni une durée de bail.")
+        st.caption("V5.8.1 utilise les liens de succession SIRENE dans les deux sens (ancien établissement → successeur et successeur → ancien établissement). Le rapprochement par adresse reste un secours. Un intervalle détecté constitue un signal de vacance historique possible, pas une preuve de vacance physique ni une durée de bail.")
+
+        succession_discoveries = st.session_state.get("succession_discoveries", [])
+        if succession_discoveries:
+            st.markdown("### 🔄 Successions détectées depuis les établissements actifs")
+            st.caption("Cette vue permet de retrouver un ancien occupant lorsque le prédécesseur n'est pas présent dans le stock des établissements fermés affiché dans le rayon.")
+            st.dataframe(pd.DataFrame(succession_discoveries), use_container_width=True, hide_index=True)
     else:
         st.info("Aucun établissement fermé géolocalisé n'a été trouvé dans le rayon avec la couverture SIRENE interrogée.")
 else:
@@ -357,4 +367,4 @@ if st.session_state.get("chosen_sirene"):
 st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_5.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V5.7\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie d’occupation → signal de vacance → historique → succession → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V5.8.1\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
