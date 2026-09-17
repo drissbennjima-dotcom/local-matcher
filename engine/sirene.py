@@ -378,11 +378,15 @@ def add_occupation_chronology(closed_rows, active_rows):
 
 
 def add_succession_links_to_chronology(api_key, closed_rows, active_rows, max_checks=15):
-    """Refine vacancy chronology with explicit SIRENE succession links.
+    """Use explicit SIRENE predecessor→successor links as first-line evidence.
 
-    Succession links are preferred evidence when available. Address-based
-    matching remains a fallback and is never treated as proof of physical
-    vacancy. API calls are capped to avoid exhausting the public quota.
+    For each closed establishment we query only the predecessor side of the
+    succession API. If a successor SIRET is returned and that SIRET is present
+    among active establishments in the analysed zone, it is treated as an
+    explicit SIRENE successor. Address-based chronology remains only a fallback.
+
+    This avoids the previous broad OR query and avoids arbitrarily associating
+    every active establishment at the same street address with a closed one.
     """
     active_by_siret = {r.get("SIRET"): r for r in (active_rows or []) if r.get("SIRET")}
     enriched = []
@@ -394,49 +398,70 @@ def add_succession_links_to_chronology(api_key, closed_rows, active_rows, max_ch
         item.setdefault("Successeur SIRET", "")
         item.setdefault("Date succession SIRENE", "")
         item.setdefault("Continuité économique", "")
+        item.setdefault("Transfert de siège", "")
+        item.setdefault("Source rapprochement", "Rapprochement par adresse")
 
         if siret and checked < max_checks:
             checked += 1
             try:
-                links = search_succession_links(api_key, siret)
+                links = search_succession_links(api_key, siret, direction="predecessor")
             except Exception:
                 links = []
-            # Keep links where this closed establishment is the predecessor.
+
             successors = [
                 l for l in links
                 if l.get("siretEtablissementPredecesseur") == siret
                 and l.get("siretEtablissementSuccesseur")
             ]
+
             if successors:
-                link = sorted(successors, key=lambda x: x.get("dateLienSuccession") or "9999-12-31")[0]
-                succ_siret = link.get("siretEtablissementSuccesseur", "")
-                succ_row = active_by_siret.get(succ_siret)
-                succ_name = ""
-                if succ_row:
-                    succ_name = (succ_row.get("Enseigne / nom usuel")
-                                 or succ_row.get("Entreprise")
-                                 or succ_siret)
-                else:
-                    succ_name = succ_siret
+                # Keep all successor SIRETs, because SIRENE can describe a
+                # split/scission with more than one successor.
+                successors = sorted(successors, key=lambda x: x.get("dateLienSuccession") or "9999-12-31")
+                succ_sirets = [l.get("siretEtablissementSuccesseur") for l in successors]
+                succ_sirets = list(dict.fromkeys([s for s in succ_sirets if s]))
+                first_link = successors[0]
+                names = []
+                for succ_siret in succ_sirets:
+                    succ_row = active_by_siret.get(succ_siret)
+                    if succ_row:
+                        names.append(succ_row.get("Enseigne / nom usuel") or succ_row.get("Entreprise") or succ_siret)
+                    else:
+                        names.append(succ_siret)
+
                 item["Succession SIRENE"] = "Oui"
-                item["Successeur SIRET"] = succ_siret
-                item["Date succession SIRENE"] = link.get("dateLienSuccession", "")
-                item["Continuité économique"] = ("Oui" if link.get("continuiteEconomique")
-                                                 else "Non" if link.get("continuiteEconomique") is not None else "")
-                item["Nouvel occupant détecté"] = succ_name
+                item["Successeur SIRET"] = "; ".join(succ_sirets)
+                item["Date succession SIRENE"] = "; ".join(
+                    [l.get("dateLienSuccession", "") for l in successors if l.get("dateLienSuccession")]
+                )
+                econ = [l.get("continuiteEconomique") for l in successors if l.get("continuiteEconomique") is not None]
+                if econ:
+                    item["Continuité économique"] = "Oui" if any(econ) else "Non"
+                transfer = [l.get("transfertSiege") for l in successors if l.get("transfertSiege") is not None]
+                if transfer:
+                    item["Transfert de siège"] = "Oui" if any(transfer) else "Non"
+
+                item["Nouvel occupant détecté"] = "; ".join(dict.fromkeys(names))
+                item["Source rapprochement"] = "Lien de succession SIRENE"
                 item["Signal de vacance"] = "Successeur SIRENE identifié : vacance actuelle non démontrée"
                 item["Niveau de signal"] = "Faible"
-                item["Vacance historique"] = "À interpréter : succession SIRENE identifiée"
+
                 closure = _parse_iso_date(item.get("Date fermeture"))
-                succ_date = _parse_iso_date(link.get("dateLienSuccession"))
+                succ_dates = [_parse_iso_date(l.get("dateLienSuccession")) for l in successors]
+                succ_dates = [d for d in succ_dates if d]
+                succ_date = min(succ_dates) if succ_dates else None
                 if closure and succ_date and succ_date >= closure:
                     months = round((succ_date - closure).days / 30.4375, 1)
                     item["Durée intervalle (mois)"] = months
-                    item["Chronologie"] = f"Fermeture {closure.isoformat()} → succession SIRENE {succ_date.isoformat()} → {succ_name}"
+                    item["Vacance historique"] = "Possible : intervalle entre fermeture et succession SIRENE"
+                    item["Chronologie"] = f"Fermeture {closure.isoformat()} → succession SIRENE {succ_date.isoformat()} → {', '.join(dict.fromkeys(names))}"
                 else:
-                    item["Chronologie"] = f"Fermeture {item.get('Date fermeture') or 'date inconnue'} → succession SIRENE → {succ_name}"
+                    item["Vacance historique"] = "À interpréter : succession SIRENE identifiée"
+                    item["Chronologie"] = f"Fermeture {item.get('Date fermeture') or 'date inconnue'} → succession SIRENE → {', '.join(dict.fromkeys(names))}"
+
         enriched.append(item)
     return enriched
+
 
 def summarize_history(periods):
     out=[]
@@ -472,12 +497,24 @@ def get_establishment_history(api_key: str, siret: str):
     return _request_siret(api_key, siret)
 
 
-def search_succession_links(api_key: str, siret: str):
-    """Return establishment succession links for a SIRET."""
+def search_succession_links(api_key: str, siret: str, direction="predecessor"):
+    """Return SIRENE succession links for one SIRET.
+
+    The API documentation exposes predecessor and successor searches as
+    separate queries. For vacancy analysis we normally start from a closed
+    establishment and therefore query its successor links directly.
+    """
+    if direction not in {"predecessor", "successor"}:
+        raise ValueError("Direction de succession invalide.")
+    field = (
+        "siretEtablissementPredecesseur"
+        if direction == "predecessor"
+        else "siretEtablissementSuccesseur"
+    )
     try:
         r = requests.get(
             f"{BASE_URL}/siret/liensSuccession",
-            params={"q": f"siretEtablissementPredecesseur:{siret} OR siretEtablissementSuccesseur:{siret}"},
+            params={"q": f"{field}:{siret}"},
             headers=_headers(api_key), timeout=TIMEOUT,
         )
     except requests.RequestException as exc:
@@ -491,7 +528,7 @@ def search_succession_links(api_key: str, siret: str):
     if r.status_code == 403:
         raise RuntimeError("Accès API SIRENE refusé (403). Vérifiez la souscription Accès public.")
     if r.status_code == 429:
-        raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réessayez dans quelques secondes.")
+        raise RuntimeError("Quota SIRENE atteint (30 requêtes/minute). Réduisez la recherche historique ou réessayez dans quelques secondes.")
     raise RuntimeError(f"Erreur SIRENE succession : HTTP {r.status_code}: {r.text[:250]}")
 
 

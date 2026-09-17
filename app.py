@@ -12,8 +12,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.7", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.7")
+st.set_page_config(page_title="Local Matcher V5.8", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.8")
 st.caption("Local cible → zone → actifs + fermés → chronologie d'occupation → signal de vacance → historique → matching")
 
 activities = pd.read_csv("data/activites.csv")
