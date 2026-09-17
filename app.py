@@ -12,8 +12,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V6.0", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V6.0")
+st.set_page_config(page_title="Local Matcher V6.1", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V6.1")
 st.caption("Local cible → zone → actifs + fermés → chronologie → succession SIRENE → opportunités de vacance → matching")
 
 activities = pd.read_csv("data/activites.csv")
@@ -84,57 +84,113 @@ def add_vacancy_signals(closed_rows, active_rows):
     return enriched
 
 def build_opportunities(closed_rows):
-    """Create a commercial shortlist from closed establishments.
+    """Build a conservative shortlist of currently plausible vacancy signals.
 
-    Score is a prioritisation signal, not proof of physical vacancy.
+    V6.1 deliberately excludes old closures, unknown dates, and addresses where
+    an active establishment is already detected. The result is a prioritisation
+    aid, not proof of physical vacancy.
     """
     from datetime import date
-    out = []
+    opportunities = []
+    historical = []
     today = date.today()
+
     for r in closed_rows or []:
         item = dict(r)
-        score = 0
-        reasons = []
-        if item.get("Signal de vacance", "").startswith("Vacance potentielle"):
-            score += 45; reasons.append("aucun actif SIRENE à l'adresse")
-        elif item.get("Succession SIRENE") == "Oui":
-            score += 10; reasons.append("successeur SIRENE identifié")
-        else:
-            score += 5
+        closure = _parse_date_safe(item.get("Date fermeture"))
+        has_active = bool((item.get("Occupant actif détecté") or "").strip())
+        name = (item.get("Enseigne / nom usuel") or item.get("Entreprise") or "").strip()
         gap = item.get("Durée intervalle (mois)")
         try:
             gap = float(gap)
         except Exception:
             gap = None
+
+        # Current active occupant or explicit SIRENE successor means the former
+        # establishment is not a current vacancy candidate.
+        if has_active or item.get("Succession SIRENE") == "Oui":
+            continue
+
+        # No reliable closure date: keep it out of the commercial shortlist.
+        if not closure:
+            item["Classement vacance"] = "Donnée insuffisante"
+            historical.append(item)
+            continue
+
+        age_months = max(0, (today - closure).days / 30.4375)
+
+        # Closures older than 36 months are historical, not current opportunity
+        # candidates. This prevents 1980s/1990s records from dominating the list.
+        if age_months > 36:
+            item["Classement vacance"] = "Historique ancien"
+            historical.append(item)
+            continue
+
+        score = 50
+        reasons = ["aucun actif SIRENE détecté à l'adresse"]
+
+        if age_months <= 3:
+            score += 35
+            reasons.append("fermeture très récente")
+        elif age_months <= 12:
+            score += 25
+            reasons.append("fermeture récente")
+        elif age_months <= 24:
+            score += 15
+            reasons.append("fermeture de moins de 2 ans")
+        else:
+            score += 5
+            reasons.append("fermeture de moins de 3 ans")
+
         if gap is not None and gap >= 6:
-            score += 20; reasons.append(f"intervalle historique de {gap:g} mois")
+            score += 10
+            reasons.append(f"intervalle historique de {gap:g} mois")
         elif gap is not None and gap > 0:
-            score += 10; reasons.append("intervalle historique détecté")
-        d = _parse_date_safe(item.get("Date fermeture"))
-        if d:
-            age_months = max(0, (today - d).days / 30.4375)
-            if age_months <= 12:
-                score += 20; reasons.append("fermeture récente")
-            elif age_months <= 36:
-                score += 10; reasons.append("fermeture récente à intermédiaire")
-        dist = item.get("Distance (m)")
+            score += 5
+            reasons.append("intervalle historique détecté")
+
+        if name:
+            score += 5
+            reasons.append("ancien occupant identifié")
+        else:
+            score -= 20
+            reasons.append("ancien occupant non identifié")
+
         try:
-            dist = float(dist)
-            if dist <= 250: score += 10
-            elif dist <= 500: score += 5
+            dist = float(item.get("Distance (m)"))
+            if dist <= 250:
+                score += 5
+                reasons.append("dans les 250 m")
+            elif dist <= 500:
+                score += 3
+                reasons.append("dans les 500 m")
         except Exception:
             pass
-        if item.get("Succession SIRENE") == "Oui" or item.get("Occupant actif détecté"):
-            score -= 25
+
         score = max(0, min(100, score))
-        if score >= 60: niveau = "🔴 Priorité élevée"
-        elif score >= 35: niveau = "🟠 À qualifier"
-        else: niveau = "🟡 Signal faible"
+        if score >= 80:
+            niveau = "🔴 Priorité à vérifier"
+        elif score >= 65:
+            niveau = "🟠 À qualifier"
+        else:
+            niveau = "🟡 Signal faible"
+
         item["Score opportunité"] = score
         item["Niveau opportunité"] = niveau
         item["Pourquoi"] = " · ".join(reasons)
-        out.append(item)
-    return sorted(out, key=lambda r: (-int(r.get("Score opportunité", 0)), float(r.get("Distance (m)") or 999999)))
+        item["Classement vacance"] = "Opportunité récente à vérifier"
+        opportunities.append(item)
+
+    opportunities = sorted(
+        opportunities,
+        key=lambda r: (-int(r.get("Score opportunité", 0)), float(r.get("Distance (m)") or 999999))
+    )
+    historical = sorted(
+        historical,
+        key=lambda r: (_parse_date_safe(r.get("Date fermeture")) or date.min),
+        reverse=True,
+    )
+    return opportunities, historical
 
 def _parse_date_safe(value):
     if not value: return None
@@ -187,7 +243,9 @@ if st.button("Analyser le local et son environnement", type="primary"):
                 st.session_state["zone_coord_count"] = sum(1 for r in active_rows if r.get("lat") is not None and r.get("lon") is not None)
                 st.session_state["zone_rows"] = filtered_active
                 st.session_state["zone_closed_rows"] = filtered_closed
-                st.session_state["opportunities"] = build_opportunities(filtered_closed)
+                opportunities, historical_vacancy = build_opportunities(filtered_closed)
+                st.session_state["opportunities"] = opportunities
+                st.session_state["historical_vacancy"] = historical_vacancy
                 st.session_state["zone_total_commune"] = len(active_rows)
                 st.session_state["zone_closed_total_commune"] = len(closed_rows)
     except Exception as exc:
@@ -291,14 +349,22 @@ if geo:
 
     # --- Opportunity shortlist ---
     opportunities = st.session_state.get("opportunities", [])
+    historical_vacancy = st.session_state.get("historical_vacancy", [])
     st.markdown("### 🎯 Opportunités de locaux à qualifier")
-    st.caption("Cette shortlist priorise les établissements fermés présentant plusieurs signaux compatibles avec une vacance potentielle. Elle ne constitue pas une preuve de disponibilité du local.")
+    st.caption("V6.1 ne retient ici que les fermetures datées de moins de 36 mois, sans occupant actif détecté à la même adresse. Ce classement est une aide à la prospection, pas une preuve de vacance physique.")
     if opportunities:
         opp_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in opportunities])
-        cols = [c for c in ["Score opportunité", "Niveau opportunité", "Distance (m)", "Enseigne / nom usuel", "Entreprise", "Date fermeture", "Nouvel occupant détecté", "Vacance historique", "Durée intervalle (mois)", "Pourquoi", "Adresse", "APE", "Catégorie commerciale"] if c in opp_df.columns]
+        cols = [c for c in ["Score opportunité", "Niveau opportunité", "Distance (m)", "Enseigne / nom usuel", "Entreprise", "Date fermeture", "Vacance historique", "Durée intervalle (mois)", "Pourquoi", "Adresse", "APE", "Catégorie commerciale"] if c in opp_df.columns]
         st.dataframe(opp_df[cols].head(50), use_container_width=True, hide_index=True)
     else:
-        st.info("Aucune opportunité ne peut encore être priorisée avec les données récupérées.")
+        st.info("Aucune opportunité récente ne peut être priorisée avec les données récupérées. Les établissements réoccupés ou trop anciens sont volontairement exclus de cette shortlist.")
+
+    if historical_vacancy:
+        st.markdown("### 📚 Historique ancien / données à faible intérêt immédiat")
+        st.caption("Fermetures de plus de 36 mois ou dates insuffisantes : conservées pour l'historique, mais exclues du classement des opportunités actuelles.")
+        hist_df = pd.DataFrame([{k:v for k,v in r.items() if k not in ("Historique périodes", "lat", "lon")} for r in historical_vacancy])
+        cols = [c for c in ["Distance (m)", "Enseigne / nom usuel", "Entreprise", "Date fermeture", "Classement vacance", "Vacance historique", "Adresse", "APE"] if c in hist_df.columns]
+        st.dataframe(hist_df[cols].head(100), use_container_width=True, hide_index=True)
 
     # --- Historical layer for vacancy detection ---
     st.markdown("### 🏚️ Anciens établissements dans le rayon")
@@ -329,7 +395,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V6 conserve une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
+st.caption("V6.1 conserve une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")
@@ -440,4 +506,4 @@ if st.session_state.get("chosen_sirene"):
 st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v5_5.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V6.0\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V6.1\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
