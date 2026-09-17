@@ -34,3 +34,7 @@ Les données SIRENE sont fournies par l'Insee et mises à jour quotidiennement. 
 
 ## V5.3
 Reconstruction de la chronologie à partir des périodes historisées déjà retournées par SIRENE, avec appels API supplémentaires limités aux cas nécessaires.
+
+
+## V7 — Reconstitution des locaux
+V7 ajoute une vue locale centrée sur l'adresse : les établissements actifs et fermés sont regroupés par adresse SIRENE afin de distinguer les locaux occupés, les signaux de vacance potentielle et les historiques anciens. Cette reconstruction est une approximation analytique : une adresse SIRENE n'est ni une parcelle cadastrale ni une unité locative et doit être vérifiée sur le terrain.
