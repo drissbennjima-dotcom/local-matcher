@@ -12,8 +12,8 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V5.6", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V5.6")
+st.set_page_config(page_title="Local Matcher V5.6.1", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V5.6.1")
 st.caption("Local cible → zone → actifs + fermés → chronologie d'occupation → signal de vacance → historique → matching")
 
 activities = pd.read_csv("data/activites.csv")
@@ -235,7 +235,7 @@ if geo:
         ]
         closed_cols = [c for c in preferred_cols if c in closed_zone_df.columns] + [c for c in closed_zone_df.columns if c not in preferred_cols]
         st.dataframe(closed_zone_df.sort_values("Distance (m)")[closed_cols].head(300), use_container_width=True, hide_index=True)
-        st.caption("V5.6 ajoute une chronologie prudente : fermeture d'un établissement → recherche d'un actif postérieur à la même adresse. Un intervalle détecté constitue un signal de vacance historique possible, pas une preuve de vacance physique ni une durée de bail.")
+        st.caption("V5.6.1 ajoute une chronologie prudente : fermeture d'un établissement → recherche d'un actif postérieur à la même adresse. Un intervalle détecté constitue un signal de vacance historique possible, pas une preuve de vacance physique ni une durée de bail.")
     else:
         st.info("Aucun établissement fermé géolocalisé n'a été trouvé dans le rayon avec la couverture SIRENE interrogée.")
 else:
@@ -245,7 +245,7 @@ st.divider()
 
 # --- Exact address history ---
 st.subheader("🔎 Historique du local")
-st.caption("V5.6 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
+st.caption("V5.6.1 impose une recherche à l'adresse exacte : le numéro, la voie, le code postal et la commune sont vérifiés. Aucun établissement d'une autre adresse n'est conservé.")
 if use_sirene:
     if not api_key:
         st.error("Clé SIRENE introuvable. Vérifiez Streamlit → Manage app → Settings → Secrets.")

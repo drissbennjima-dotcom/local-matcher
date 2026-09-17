@@ -250,9 +250,10 @@ def flatten_establishments(establishments, forced_status=None):
         date_debut_actif = current_period.get("dateDebut", "") if raw_status == "A" else ""
         date_fermeture = ""
         if raw_status == "F":
-            f_periods = [p for p in periods if p.get("etatAdministratifEtablissement") == "F"]
-            if f_periods:
-                date_fermeture = sorted([p.get("dateDebut", "") for p in f_periods if p.get("dateDebut")], reverse=True)[0]
+            f_periods = [p for p in periods if isinstance(p, dict) and p.get("etatAdministratifEtablissement") == "F"]
+            closure_dates = [p.get("dateDebut", "") for p in f_periods if p.get("dateDebut")]
+            if closure_dates:
+                date_fermeture = sorted(closure_dates, reverse=True)[0]
         rows.append({
             "Statut": status, "SIRET": e.get("siret", ""), "SIREN": e.get("siren", ""),
             "Enseigne / nom usuel": enseigne, "Entreprise": ul.get("denominationUniteLegale") or "",
