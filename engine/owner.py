@@ -21,7 +21,8 @@ def search_moral_owners(parcel_code: str, size: int = 20):
     """Find legal-entity rights holders for a cadastral parcel.
 
     Source: Koumoul's public MAJIC-derived API, based on DGFiP open-data files.
-    The data is a dated cadastral snapshot and is not proof of ownership today.
+    The source describes rights holders at the reference date; it is not proof
+    of ownership today.
     """
     code = (parcel_code or "").strip().upper()
     if not code:
@@ -40,5 +41,6 @@ def search_moral_owners(parcel_code: str, size: int = 20):
             "Contenance (m²)": row.get("contenance_parcelle", ""),
             "Adresse foncière": row.get("adresse", ""),
             "Commune": row.get("nom_commune", ""),
+            "Millésime / référence": "2022 (référence annoncée par la source Koumoul)",
         })
     return out

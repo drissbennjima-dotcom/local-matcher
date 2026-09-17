@@ -12,11 +12,12 @@ from engine.sirene import (
 from engine.geocoding import geocode_address
 from engine.geocadastre import best_parcel
 from engine.owner import search_moral_owners
+from engine.dvf import search_dvf_by_parcel, dvf_signal
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V10", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V10")
-st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → propriétaire personne morale")
+st.set_page_config(page_title="Local Matcher V10.1", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V10.1")
+st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → détenteur de droits → DVF")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -420,7 +421,7 @@ if geo:
 
     # --- V10 : propriétaire personne morale ---
     if parcel.get("Parcelle cadastrale"):
-        st.markdown("### 🏢 Propriétaire personne morale détecté")
+        st.markdown("### 🏢 Détenteur de droits personne morale identifié")
         try:
             owners_found = search_moral_owners(parcel.get("Parcelle cadastrale"))
             st.session_state["owners_found"] = owners_found
@@ -432,11 +433,36 @@ if geo:
             odf = pd.DataFrame(owners_found)
             st.dataframe(odf, use_container_width=True, hide_index=True)
             st.success(f"{len(owners_found)} détenteur(s) de droits personne morale retrouvé(s) sur cette parcelle.")
-            st.caption("Source : données MAJIC / personnes morales diffusées par Koumoul à partir des données DGFiP. Le millésime est daté et la donnée ne garantit pas la situation de propriété au jour du test.")
+            st.caption("Source : données MAJIC / personnes morales diffusées par Koumoul à partir des données DGFiP. Le millésime est daté et la donnée identifie un détenteur de droits à la date de référence ; elle ne garantit pas le propriétaire actuel.")
         elif st.session_state.get("owner_error"):
             st.warning(f"Recherche propriétaire indisponible : {st.session_state['owner_error']}")
         else:
             st.info("Aucune personne morale retrouvée sur cette parcelle dans la base interrogée. Un propriétaire particulier peut notamment ne pas apparaître dans cette donnée.")
+
+        # --- V10.1 : signal de mutation DVF ---
+        st.markdown("### 💶 Transactions foncières DVF sur la parcelle")
+        try:
+            dvf_rows = search_dvf_by_parcel(parcel.get("Parcelle cadastrale"))
+            st.session_state["dvf_rows"] = dvf_rows
+            st.session_state["dvf_error"] = ""
+        except Exception as exc:
+            dvf_rows = []
+            st.session_state["dvf_rows"] = []
+            st.session_state["dvf_error"] = str(exc)
+
+        dvf_rows = st.session_state.get("dvf_rows", [])
+        if dvf_rows:
+            dvf_df = pd.DataFrame(dvf_rows)
+            preferred = ["Date mutation", "Nature mutation", "Valeur foncière (€)", "Type local", "Surface bâtie (m²)", "Surface terrain (m²)", "Nombre de lots", "Parcelle", "Adresse mutation", "Commune"]
+            cols = [c for c in preferred if c in dvf_df.columns]
+            st.dataframe(dvf_df[cols].head(30), use_container_width=True, hide_index=True)
+            sig = dvf_signal(dvf_rows)
+            st.info(f"**{sig['Statut DVF']}** · Dernière mutation : **{sig['Dernière mutation DVF'] or 'NC'}** · {sig['Signal changement propriétaire']}")
+            st.caption("DVF recense les transactions immobilières, mais ne fournit pas le nom de l'acheteur ou du vendeur. Une mutation est donc un signal de changement de propriétaire potentiel, pas une identification du nouveau propriétaire.")
+        elif st.session_state.get("dvf_error"):
+            st.warning(f"Recherche DVF indisponible : {st.session_state['dvf_error']}")
+        else:
+            st.info("Aucune mutation DVF retrouvée sur cette parcelle dans la période couverte par la base interrogée.")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Actifs dans le rayon", len(zone_rows))
     c2.metric("Fermés dans le rayon", len(zone_closed_rows))
@@ -733,7 +759,15 @@ if auto_owners:
     export["siren_proprietaire_auto"] = auto_owners[0].get("SIREN", "")
     export["forme_juridique_proprietaire"] = auto_owners[0].get("Forme juridique", "")
     export["droit_proprietaire"] = auto_owners[0].get("Code droit", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10.csv", "text/csv")
+    export["millésime_proprietaire"] = auto_owners[0].get("Millésime / référence", "")
+dvf_rows = st.session_state.get("dvf_rows", [])
+if dvf_rows:
+    sig = dvf_signal(dvf_rows)
+    export["nb_mutations_dvf"] = len(dvf_rows)
+    export["derniere_mutation_dvf"] = sig.get("Dernière mutation DVF", "")
+    export["nature_derniere_mutation_dvf"] = sig.get("Nature dernière mutation", "")
+    export["signal_changement_proprietaire_dvf"] = sig.get("Signal changement propriétaire", "")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_1.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V9\n`Adresse → Géoplateforme/BAN → parcelle → commune → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V10.1\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")
