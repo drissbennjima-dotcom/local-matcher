@@ -3,9 +3,13 @@ from datetime import date
 import requests
 
 # API Données foncières du Cerema — DVF+ open-data.
-# DVF+ est un flux ouvert et géolocalisé. On interroge une petite emprise
-# autour du point géocodé puis on conserve uniquement la parcelle demandée.
-BASE_URL = "https://apidf.cerema.fr"
+# Plusieurs points d'accès sont testés dans l'ordre pour éviter qu'une
+# indisponibilité DNS d'un endpoint bloque Local Matcher.
+BASE_URLS = [
+    "https://apidf-preprod.cerema.fr",
+    "https://apidf.k8-dev.cerema.fr",
+    "https://apidf.cerema.fr",
+]
 TIMEOUT = 20
 MAX_PAGES = 8
 PAGE_SIZE = 500
@@ -30,7 +34,6 @@ def _parcel_in_value(value, parcel_code):
     text = _clean(value)
     if not text:
         return False
-    # Les champs l_idpar / l_idparmut peuvent être des listes sérialisées.
     normalised = _normalise_parcelle(text)
     return target == normalised or target in normalised
 
@@ -45,25 +48,25 @@ def _payload_rows(payload):
     return []
 
 
-def _request(params):
+def _request(base_url, params):
     try:
         response = requests.get(
-            f"{BASE_URL}/dvf_opendata/mutations",
+            f"{base_url.rstrip('/')}/dvf_opendata/mutations/",
             params=params,
             timeout=TIMEOUT,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "Local-Matcher/10.3",
+                "User-Agent": "Local-Matcher/10.4",
             },
         )
     except requests.RequestException as exc:
-        raise RuntimeError(f"connexion impossible à l'API DVF+ Cerema : {exc}") from exc
+        raise RuntimeError(f"connexion impossible: {exc}") from exc
 
     if response.status_code == 429:
         raise RuntimeError("API DVF+ temporairement limitée (429).")
     if response.status_code >= 400:
         detail = response.text[:250].replace("\n", " ")
-        raise RuntimeError(f"API DVF+ : HTTP {response.status_code} ({detail})")
+        raise RuntimeError(f"HTTP {response.status_code} ({detail})")
 
     try:
         return response.json()
@@ -104,7 +107,6 @@ def _extract_rows(parcel_code, payload):
             "Commune": _clean(props.get("nomcomm") or props.get("nom_commune") or props.get("commune")),
         })
 
-    # Déduplication par mutation + date + valeur.
     dedup = {}
     for row in rows:
         key = (row["ID mutation"], row["Date mutation"], row["Valeur foncière (€)"])
@@ -117,9 +119,9 @@ def _extract_rows(parcel_code, payload):
 def search_dvf_by_parcel(parcel_code: str, lat=None, lon=None, size: int = 50):
     """Retourne les mutations DVF+ liées à une parcelle cadastrale.
 
-    La recherche utilise l'API ouverte DVF+ du Cerema sur une petite emprise
-    autour du point géocodé, puis filtre strictement sur l'identifiant cadastral.
-    Cela évite de dépendre d'une API tierce de type micro-service.
+    Recherche une petite emprise autour du point géocodé puis filtre strictement
+    sur la référence cadastrale. Trois endpoints Cerema sont essayés pour
+    absorber une indisponibilité ponctuelle ou DNS d'un point d'accès.
     """
     code = _normalise_parcelle(parcel_code)
     if not code:
@@ -129,32 +131,62 @@ def search_dvf_by_parcel(parcel_code: str, lat=None, lon=None, size: int = 50):
 
     lat = float(lat)
     lon = float(lon)
-    # Environ 150–250 m autour du point, en restant très sous la limite de 0,02°.
     delta = 0.0025
     bbox = [lon - delta, lat - delta, lon + delta, lat + delta]
+    params = {
+        "in_bbox": ",".join(f"{v:.6f}" for v in bbox),
+        "fields": "all",
+        "page_size": PAGE_SIZE,
+    }
 
-    all_rows = []
-    for page in range(1, MAX_PAGES + 1):
-        payload = _request({
-            "in_bbox": ",".join(f"{v:.6f}" for v in bbox),
-            "fields": "all",
-            "page": page,
-            "page_size": PAGE_SIZE,
-        })
-        page_rows = _extract_rows(code, payload)
-        all_rows.extend(page_rows)
+    errors = []
+    for base_url in BASE_URLS:
+        try:
+            all_rows = []
+            next_url = None
+            for page in range(1, MAX_PAGES + 1):
+                if next_url:
+                    response = requests.get(
+                        next_url,
+                        timeout=TIMEOUT,
+                        headers={"Accept": "application/json", "User-Agent": "Local-Matcher/10.4"},
+                    )
+                    if response.status_code >= 400:
+                        detail = response.text[:250].replace("\n", " ")
+                        raise RuntimeError(f"HTTP {response.status_code} ({detail})")
+                    payload = response.json()
+                else:
+                    page_params = dict(params)
+                    page_params["page"] = page
+                    payload = _request(base_url, page_params)
 
-        raw_count = len(_payload_rows(payload))
-        if raw_count < PAGE_SIZE:
-            break
+                page_rows = _extract_rows(code, payload)
+                all_rows.extend(page_rows)
 
-    dedup = {}
-    for row in all_rows:
-        key = (row["ID mutation"], row["Date mutation"], row["Valeur foncière (€)"])
-        dedup[key] = row
-    rows = list(dedup.values())
-    rows.sort(key=lambda r: r.get("Date mutation", ""), reverse=True)
-    return rows[: max(1, min(int(size), 200))]
+                next_value = payload.get("next") if isinstance(payload, dict) else None
+                if next_value:
+                    next_url = next_value
+                else:
+                    raw_count = len(_payload_rows(payload))
+                    if raw_count < PAGE_SIZE:
+                        break
+                    next_url = None
+
+            dedup = {}
+            for row in all_rows:
+                key = (row["ID mutation"], row["Date mutation"], row["Valeur foncière (€)"])
+                dedup[key] = row
+            rows = list(dedup.values())
+            rows.sort(key=lambda r: r.get("Date mutation", ""), reverse=True)
+            return rows[: max(1, min(int(size), 200))]
+        except Exception as exc:
+            errors.append(f"{base_url}: {exc}")
+            continue
+
+    raise RuntimeError(
+        "DVF+ temporairement indisponible après essai des points d'accès Cerema. "
+        + " | ".join(errors[:3])
+    )
 
 
 def dvf_signal(rows):

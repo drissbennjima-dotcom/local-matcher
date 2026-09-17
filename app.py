@@ -15,8 +15,8 @@ from engine.owner import search_moral_owners
 from engine.dvf import search_dvf_by_parcel, dvf_signal
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V10.3", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V10.3")
+st.set_page_config(page_title="Local Matcher V10.4", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V10.4")
 st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → détenteur de droits → DVF")
 
 activities = pd.read_csv("data/activites.csv")
@@ -439,7 +439,7 @@ if geo:
         else:
             st.info("Aucune personne morale retrouvée sur cette parcelle dans la base interrogée. Un propriétaire particulier peut notamment ne pas apparaître dans cette donnée.")
 
-        # --- V10.3 : signal de mutation DVF+ Cerema ---
+        # --- V10.4 : signal de mutation DVF+ Cerema ---
         st.markdown("### 💶 Transactions foncières DVF+ sur la parcelle")
         try:
             dvf_rows = search_dvf_by_parcel(parcel.get("Parcelle cadastrale"), lat=geo.get("lat"), lon=geo.get("lon"))
@@ -767,7 +767,7 @@ if dvf_rows:
     export["derniere_mutation_dvf"] = sig.get("Dernière mutation DVF", "")
     export["nature_derniere_mutation_dvf"] = sig.get("Nature dernière mutation", "")
     export["signal_changement_proprietaire_dvf"] = sig.get("Signal changement propriétaire", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_3.csv", "text/csv")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v10_4.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V10.3\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")
+st.markdown("### Architecture V10.4\n`Adresse → Géoplateforme/BAN → parcelle → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching → détenteur de droits → DVF`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire actuel à vérifier → prospection`")

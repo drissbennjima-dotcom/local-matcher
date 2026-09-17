@@ -49,7 +49,7 @@ V9 ajoute une première brique de croisement SIRENE + référentiel géographiqu
 
 La prochaine étape pourra croiser cet identifiant cadastral avec les fichiers des personnes morales propriétaires afin de remonter vers une SCI/foncière lorsque la donnée est disponible.
 
-## V10.3 — DVF+ open-data Cerema
+## V10.4 — DVF+ open-data Cerema — points d’accès multiples
 
 La brique DVF utilise désormais l'API ouverte DVF+ du Cerema. Local Matcher interroge une petite emprise autour du point géocodé, puis filtre les mutations sur l'identifiant cadastral de la parcelle cible. Cette approche remplace la dépendance à la micro-API Cquest.
 
