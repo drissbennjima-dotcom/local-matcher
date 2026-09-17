@@ -10,11 +10,12 @@ from engine.sirene import (
     build_local_history, add_occupation_chronology, add_succession_links_to_chronology,
 )
 from engine.geocoding import geocode_address
+from engine.geocadastre import best_parcel
 from engine.geo import haversine_m
 
-st.set_page_config(page_title="Local Matcher V8", page_icon="🏬", layout="wide")
-st.title("🏬 Local Matcher V8")
-st.caption("Local cible → zone → occupants → reconstitution des locaux → vacance potentielle → matching → propriétaire")
+st.set_page_config(page_title="Local Matcher V9", page_icon="🏬", layout="wide")
+st.title("🏬 Local Matcher V9")
+st.caption("Local cible → BAN/Géoplateforme → parcelle → SIRENE → reconstitution des locaux → vacance potentielle → matching → propriétaire")
 
 activities = pd.read_csv("data/activites.csv")
 brands = pd.read_csv("data/enseignes.csv")
@@ -342,10 +343,18 @@ if st.button("Analyser le local et son environnement", type="primary"):
     try:
         with st.spinner("Géolocalisation de l'adresse…"):
             geo = geocode_address(address)
+        try:
+            parcel = best_parcel(geo["lat"], geo["lon"])
+        except Exception as parcel_exc:
+            parcel = {}
+            st.session_state["parcel_error"] = str(parcel_exc)
+        else:
+            st.session_state["parcel_error"] = ""
         st.session_state["geo"] = geo
         st.session_state["zone_rows"] = []
         st.session_state["zone_closed_rows"] = []
         st.session_state["zone_error"] = ""
+        st.session_state["parcel"] = parcel
         st.session_state["succession_discoveries"] = []
         st.session_state["local_units"] = []
         st.success(f"Adresse géolocalisée : {geo['label']}")
@@ -396,6 +405,17 @@ zone_rows = st.session_state.get("zone_rows", [])
 zone_closed_rows = st.session_state.get("zone_closed_rows", [])
 if geo:
     st.markdown(f"**Centre :** {geo['label']} · **Rayon :** {radius} m")
+    parcel = st.session_state.get("parcel", {})
+    if parcel:
+        st.markdown("### 🧭 Ancrage physique du local")
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        pc1.metric("Parcelle cadastrale", parcel.get("Parcelle cadastrale") or "NC")
+        pc2.metric("Section", parcel.get("Section") or "NC")
+        pc3.metric("N° parcelle", parcel.get("Numéro parcelle") or "NC")
+        pc4.metric("Distance du point", f"{parcel.get('Distance parcelle (m)')} m" if parcel.get("Distance parcelle (m)") not in (None, "") else "NC")
+        st.caption("Source : Géoplateforme / Parcellaire Express (PCI). Cette correspondance rattache le point géocodé à une parcelle ; elle ne constitue pas une preuve de propriété.")
+    elif st.session_state.get("parcel_error"):
+        st.warning(f"Rattachement cadastral indisponible : {st.session_state['parcel_error']}")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Actifs dans le rayon", len(zone_rows))
     c2.metric("Fermés dans le rayon", len(zone_closed_rows))
@@ -679,7 +699,11 @@ if st.session_state.get("chosen_sirene"):
     export["ancien_siren_sirene"] = c.get("SIREN", "")
     export["ancien_occupant_sirene"] = c.get("Enseigne / nom usuel", "") or c.get("Entreprise", "")
     export["ancien_ape_sirene"] = c.get("APE", "")
-st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v7.csv", "text/csv")
+parcel = st.session_state.get("parcel", {})
+export["parcelle_cadastrale"] = parcel.get("Parcelle cadastrale", "")
+export["section_cadastrale"] = parcel.get("Section", "")
+export["numero_parcelle"] = parcel.get("Numéro parcelle", "")
+st.download_button("Télécharger les prospects CSV", export.to_csv(index=False).encode("utf-8-sig"), "local_matcher_prospects_v9.csv", "text/csv")
 
 st.divider()
-st.markdown("### Architecture V8\n`Adresse exacte → géocodage → commune → SIRENE actifs + fermés → rayon → chronologie → succession bidirectionnelle → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")
+st.markdown("### Architecture V9\n`Adresse → Géoplateforme/BAN → parcelle → commune → SIRENE actifs + fermés → rayon → chronologie → succession → signal de vacance → matching`\n\n### Architecture cible\n`Local → zone → vacance potentielle → ancienne activité → profil technique → enseigne → propriétaire → prospection`")

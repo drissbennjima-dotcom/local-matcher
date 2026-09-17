@@ -38,3 +38,13 @@ Reconstruction de la chronologie à partir des périodes historisées déjà ret
 
 ## V7 — Reconstitution des locaux
 V7 ajoute une vue locale centrée sur l'adresse : les établissements actifs et fermés sont regroupés par adresse SIRENE afin de distinguer les locaux occupés, les signaux de vacance potentielle et les historiques anciens. Cette reconstruction est une approximation analytique : une adresse SIRENE n'est ni une parcelle cadastrale ni une unité locative et doit être vérifiée sur le terrain.
+
+## V9 — Ancrage cadastral
+
+V9 ajoute une première brique de croisement SIRENE + référentiel géographique/cadastral :
+- l'adresse est géocodée par le service Géoplateforme ;
+- le point géocodé est rapproché de la parcelle cadastrale la plus proche ;
+- la parcelle, section et numéro sont affichés et ajoutés à l'export ;
+- cette donnée sert d'ancrage physique du local, sans être assimilée à une preuve de propriété.
+
+La prochaine étape pourra croiser cet identifiant cadastral avec les fichiers des personnes morales propriétaires afin de remonter vers une SCI/foncière lorsque la donnée est disponible.
