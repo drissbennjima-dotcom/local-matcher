@@ -376,6 +376,68 @@ def add_occupation_chronology(closed_rows, active_rows):
     return enriched
 
 
+
+def add_succession_links_to_chronology(api_key, closed_rows, active_rows, max_checks=15):
+    """Refine vacancy chronology with explicit SIRENE succession links.
+
+    Succession links are preferred evidence when available. Address-based
+    matching remains a fallback and is never treated as proof of physical
+    vacancy. API calls are capped to avoid exhausting the public quota.
+    """
+    active_by_siret = {r.get("SIRET"): r for r in (active_rows or []) if r.get("SIRET")}
+    enriched = []
+    checked = 0
+    for row in closed_rows or []:
+        item = dict(row)
+        siret = item.get("SIRET", "")
+        item.setdefault("Succession SIRENE", "")
+        item.setdefault("Successeur SIRET", "")
+        item.setdefault("Date succession SIRENE", "")
+        item.setdefault("Continuité économique", "")
+
+        if siret and checked < max_checks:
+            checked += 1
+            try:
+                links = search_succession_links(api_key, siret)
+            except Exception:
+                links = []
+            # Keep links where this closed establishment is the predecessor.
+            successors = [
+                l for l in links
+                if l.get("siretEtablissementPredecesseur") == siret
+                and l.get("siretEtablissementSuccesseur")
+            ]
+            if successors:
+                link = sorted(successors, key=lambda x: x.get("dateLienSuccession") or "9999-12-31")[0]
+                succ_siret = link.get("siretEtablissementSuccesseur", "")
+                succ_row = active_by_siret.get(succ_siret)
+                succ_name = ""
+                if succ_row:
+                    succ_name = (succ_row.get("Enseigne / nom usuel")
+                                 or succ_row.get("Entreprise")
+                                 or succ_siret)
+                else:
+                    succ_name = succ_siret
+                item["Succession SIRENE"] = "Oui"
+                item["Successeur SIRET"] = succ_siret
+                item["Date succession SIRENE"] = link.get("dateLienSuccession", "")
+                item["Continuité économique"] = ("Oui" if link.get("continuiteEconomique")
+                                                 else "Non" if link.get("continuiteEconomique") is not None else "")
+                item["Nouvel occupant détecté"] = succ_name
+                item["Signal de vacance"] = "Successeur SIRENE identifié : vacance actuelle non démontrée"
+                item["Niveau de signal"] = "Faible"
+                item["Vacance historique"] = "À interpréter : succession SIRENE identifiée"
+                closure = _parse_iso_date(item.get("Date fermeture"))
+                succ_date = _parse_iso_date(link.get("dateLienSuccession"))
+                if closure and succ_date and succ_date >= closure:
+                    months = round((succ_date - closure).days / 30.4375, 1)
+                    item["Durée intervalle (mois)"] = months
+                    item["Chronologie"] = f"Fermeture {closure.isoformat()} → succession SIRENE {succ_date.isoformat()} → {succ_name}"
+                else:
+                    item["Chronologie"] = f"Fermeture {item.get('Date fermeture') or 'date inconnue'} → succession SIRENE → {succ_name}"
+        enriched.append(item)
+    return enriched
+
 def summarize_history(periods):
     out=[]
     for p in periods or []:
